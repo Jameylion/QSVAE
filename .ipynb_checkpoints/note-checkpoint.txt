@@ -1,0 +1,35 @@
+# @title note
+psi0 = np.array([[1],[0]])
+# print(psi1)
+c_phasep = cmath.exp(1j) * cmath.exp(2 * np.pi / 3)
+c_phasem = cmath.exp((-1j) * 2 * np.pi / 3)
+psi1 = np.array([[1],[np.sqrt(2)]]) * 1/np.sqrt(3)
+psi2 = np.array([[1],[np.sqrt(2) * c_phasep]], dtype=np.complex128) * 1/np.sqrt(3)  # * np.array([1, c_phasem],dtype=np.complex_) * 1/4
+psi3 = np.array([[1],[np.sqrt(2) * c_phasem]], dtype=np.complex128) * 1/np.sqrt(3)  # * np.array([1, c_phasep],dtype=np.complex_) * 1/4
+# np.set_printoptions(formatter={'all': lambda x: "{:.4g}".format(x)})
+# print(psi0)
+# print(psi1)
+# print(psi2)
+# print(psi3)
+
+o = 4
+# POVM matrices
+def calc_POVM_matrix(matrix, int: o):
+    return np.matmul(matrix, matrix.conj().T) *1/o
+
+M0 =  calc_POVM_matrix(psi0, o)
+M1 =  calc_POVM_matrix(psi1, o)
+M2 =  calc_POVM_matrix(psi2, o)
+M3 =  calc_POVM_matrix(psi3, o)
+
+# print("M0 is: ", M0)
+# print("M1 is: ", M1)
+# print("M2 is: ", M2)
+# print("M3 is: ", M3)
+
+
+# print(prob[0])
+# print(true)
+# print(true.shape)
+# print(true.sum(0).shape)
+# print(true.sum(0))
