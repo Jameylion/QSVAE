@@ -1,7 +1,28 @@
+import os
+import numpy as np
+import pandas as pd
 from qiskit import transpile
 from qiskit.quantum_info import Statevector
 from qiskit.primitives import BackendSampler
 from qiskit.circuit import QuantumCircuit
+import matplotlib.pyplot as plt
+from itertools import product
+from scipy.linalg import sqrtm
+import cmath
+
+# Define the Pauli matrices
+I = np.eye(2)
+sigma_x = np.array([[0, 1], [1, 0]])
+sigma_y = np.array([[0, -1j], [1j, 0]])
+sigma_z = np.array([[1, 0], [0, -1]])
+
+# Define the s^(alpha) vectors for the single-qubit POVM
+s_vectors = [
+    np.array([0, 0, 1]),  # s^(0)
+    np.array([2 * np.sqrt(2) / 3, 0, -1 / 3]),  # s^(1)
+    np.array([-np.sqrt(2) / 3, np.sqrt(2) / 3, -1 / 3]),  # s^(2)
+    np.array([-np.sqrt(2) / 3, -np.sqrt(2) / 3, -1 / 3])  # s^(3)
+]
 
 class QuantumExperiment:
     """Handles the creation and execution of quantum experiments."""
@@ -200,10 +221,10 @@ def calculate_angles(state_vector):
 
     return theta, phi
 
-# Example state: Let's take a sample state |psi> = (1/√3)|0> + (√2/√3)|1>
-# Corresponds to tetrahedral POVM states, e.g., (1/√3, √2/√3)
-example_state = [1/np.sqrt(3), np.sqrt(2)/np.sqrt(3)]
+# # Example state: Let's take a sample state |psi> = (1/√3)|0> + (√2/√3)|1>
+# # Corresponds to tetrahedral POVM states, e.g., (1/√3, √2/√3)
+# example_state = [1/np.sqrt(3), np.sqrt(2)/np.sqrt(3)]
 
-# Calculate the angles
-theta, phi = calculate_angles(example_state)
-print(f"Calculated Angles: theta = {theta:.4f} rad, phi = {phi:.4f} rad")
+# # Calculate the angles
+# theta, phi = calculate_angles(example_state)
+# print(f"Calculated Angles: theta = {theta:.4f} rad, phi = {phi:.4f} rad")

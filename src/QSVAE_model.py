@@ -1,10 +1,21 @@
-from torch.utils.data import Dataset, DataLoader, random_split, Subset
-from torchvision import transforms, utils
+import torch
+import torch.nn as nn
 from tqdm.notebook import tqdm
 import snntorch as snn
 from snntorch import spikeplot as splt
 from snntorch import spikegen
-import pickle
+import cmath
+from itertools import product
+from scipy.linalg import sqrtm
+from torch.nn import DataParallel
+from src.Quantum_circuits import *
+
+import os
+import numpy as np
+import pandas as pd
+from torch.utils.tensorboard import SummaryWriter
+import matplotlib.pyplot as plt
+
 
 class Model(torch.nn.Module):
     """ Complete model with encoder (SNN on CPU) and decoder(SNN on Brainscales) """
@@ -13,7 +24,8 @@ class Model(torch.nn.Module):
             self,
             encoder: torch.nn.Module,
             decoder: torch.nn.Module,
-            readout_scale: float = 1.):
+            readout_scale: float = 1.,
+            device: str = "cpu"):
         """
         Initialize the model by assigning encoder, network and decoder
         :param encoder: Module to encode input data
@@ -26,12 +38,13 @@ class Model(torch.nn.Module):
         self.encoder = encoder
         self.decoder = decoder
         self.latent_z = None
+        self.device = device
 
         self.readout_scale = readout_scale
 
     def reparameterization(self, mean, var):
-      std = torch.sqrt(var).to(device)
-      eps = torch.randn(std.shape).to(device)
+      std = torch.sqrt(var).to(self.device)
+      eps = torch.randn(std.shape).to(self.device)
 
       return mean + eps * std
 
@@ -172,7 +185,7 @@ class SQVAE(Model):
         self.decoder = Decoder(self.outputs, self.hidden, self.inputs, self.beta, self.num_steps).to(self.device)
 
         # Combine encoder and decoder into the model
-        self.model = Model(self.encoder, self.decoder).to(self.device)
+        self.model = Model(self.encoder, self.decoder, device=device).to(self.device)
 
         # Optimizer
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate)
@@ -233,7 +246,7 @@ class SQVAE(Model):
         return fidelity_score
 
     def train_model(self, dataloader, optimizer, device, num_epochs, writer):
-        model.train()
+        self.model.train()
 
         # Initialize list for storing loss values
         train_loss = []
@@ -248,10 +261,10 @@ class SQVAE(Model):
                 optimizer.zero_grad()
 
                 # Forward pass
-                spk, mem, mean, log_var = model(sample_batched)
+                spk, mem, mean, log_var = self.model(sample_batched)
 
                 # Calculate loss
-                loss = model.loss_function(spk.sum(0), sample_batched, mean, log_var)
+                loss = self.model.loss_function(spk.sum(0), sample_batched, mean, log_var)
                 loss.backward()
                 optimizer.step()
 
@@ -286,7 +299,7 @@ class SQVAE(Model):
         writer.flush()
         writer.close()
 
-        return model
+        return self.model
 
     def test_model(self, model, dataloader, device, writer):
         """
