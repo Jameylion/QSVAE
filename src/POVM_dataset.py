@@ -70,11 +70,11 @@ def load_data(quantum_exp, first_run, backend, n, shots, split, batch_size, shuf
         result, circuits = quantum_exp.run_experiment()
         POVM_dataset = QuantumPOVMDataset(result.data, n, transform=transforms.Compose([ToTensor()]))
 
-        with open('POVM_data.pkl', 'wb') as f:
+        with open('data\POVM_data.pkl', 'wb') as f:
             pickle.dump({'dataset': POVM_dataset, 'circuits': circuits, 'result': result}, f)
             print("Dataset and circuit saved.")
     else:
-        with open('POVM_data.pkl', 'rb') as f:
+        with open('data\POVM_data.pkl', 'rb') as f:
             data = pickle.load(f)
             POVM_dataset = data['dataset']
             print("Dataset loaded.")

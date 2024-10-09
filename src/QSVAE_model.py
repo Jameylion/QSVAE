@@ -4,9 +4,9 @@ from tqdm.notebook import tqdm
 import snntorch as snn
 from snntorch import spikeplot as splt
 from snntorch import spikegen
-import cmath
-from itertools import product
-from scipy.linalg import sqrtm
+
+
+
 from torch.nn import DataParallel
 from src.Quantum_circuits import *
 
