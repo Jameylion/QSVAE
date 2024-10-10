@@ -108,25 +108,22 @@ class QuantumExperiment:
     def print_circuits_with_counts(self):
         """Prints the compiled circuits and measurement data."""
         circuits_compiled = self.circuits_compiled
-        result = self.results
         # Print circuits and measurement data
-        counts = result.get_counts()
+        counts = self.result.get_counts()
         for i, circuit in enumerate(circuits_compiled):
-          display(circuit.draw("mpl", style="iqp"))
+          circuit.draw("mpl", style="iqp")
           # latex_source = circuit.draw("latex_source", style="iqp")
           # print(latex_source)
           print(counts[i])
 
 def select_backend(backend_type):
   if backend_type == "Starmon-5":
-    import os
     from quantuminspire.credentials import get_authentication
     from quantuminspire.qiskit import QI
-    from quantuminspire.credentials import get_token_authentication
     from coreapi.auth import TokenAuthentication
     token = TokenAuthentication('6af0e322481376e6785741e7af617420b671b522', scheme="token")
     QI.set_authentication(token)
-    auth = get_token_authentication()
+    # auth = get_token_authentication()
 
     print(QI.backends())
     backend = QI.get_backend('Starmon-5')
@@ -160,45 +157,6 @@ def tensor_product_povm_matrices(n, s):
     return povm_matrices_n_qubits
 
 
-# Define a function to calculate fidelity between two density matrices
-def fidelity(rho, sigma):
-    # Step 1: Calculate the square root of the first density matrix
-    sqrt_rho = sqrtm(rho)
-
-    # Step 2: Calculate the intermediate matrix product sqrt(rho) * sigma * sqrt(rho)
-    product_matrix = sqrt_rho @ sigma @ sqrt_rho
-
-    # Step 3: Calculate the square root of the product matrix
-    sqrt_product_matrix = sqrtm(product_matrix)
-
-    # Step 4: Calculate the trace of the square root of the product matrix
-    fidelity_value = np.trace(sqrt_product_matrix)
-
-    # Step 5: Square the trace to get the fidelity
-    fidelity_value = np.real(fidelity_value) ** 2  # Take real part to avoid numerical issues
-
-    return fidelity_value
-
-def reconstruct_matrix_from_prob(n, s_vectors, prob_rec, prob_true):
-
-    povm_matrices_n_qubits = tensor_product_povm_matrices(n, s_vectors)
-
-    # Initialize the density matrix for n qubits (size 2^n x 2^n)
-    dim = 2**n
-    rho_rec = np.zeros((dim, dim), dtype=np.complex128)
-    rho_true = np.zeros((dim, dim), dtype=np.complex128)
-
-
-    # Reconstruct the density matrix using the POVM matrices and probabilities
-    for i in range(len(prob_rec)):
-        rho_rec += prob_rec[i].cpu().item()  * povm_matrices_n_qubits[i]
-        rho_true += prob_true[i].cpu().item() * povm_matrices_n_qubits[i]
-
-    # Normalize the density matrix to ensure the trace is 1
-    rho_rec /= np.trace(rho_rec)
-    rho_true /= np.trace(rho_true)
-
-    return rho_rec, rho_true
 
 def calculate_angles(state_vector):
     """

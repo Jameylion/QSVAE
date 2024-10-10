@@ -1,0 +1,81 @@
+import matplotlib.pyplot as plt
+# from IPython.display import display, clear_output
+import os
+import numpy as np
+import pandas as pd
+import torch
+
+from src.Quantum_circuits import *
+from src.QSVAE_model import *
+from src.POVM_dataset import *
+# from torchvision import transforms, utils
+import matplotlib.gridspec as gridspec
+
+if torch.cuda.is_available():
+ dev = "cuda:0"
+#  dev = "cpu"
+else:
+ dev = "cpu"
+device = torch.device(dev)
+print(device)
+torch.__version__
+
+n = 3 # Amount of qubits
+shots = 100_000 # amount of shots taken by the quantum simulator
+first_run = True
+# Support for "Starmon-5" and "AerSimulator" 
+backend_type = "AerSimulator"
+backend = select_backend(backend_type)
+train = False
+test = False
+val = False
+
+# Define hyperparameters
+beta = 0.819
+num_steps = 200
+num_epochs = 6
+learning_rate = 1e-3
+batch_train, batch_test, batch_val = (10000, 200, 1000)
+num_workers = 0
+shuffle = False
+split = [0.6, 0.2]
+
+# Reproduction of paper
+parameters = [
+    (3, 100, 20_000),
+    (4, 200, 100_000),
+    (5, 500, 4**5 * 500),  # 4^5 * 500
+    (6, 600, 4**6 * 500),  # 4^6 * 500
+    (7, 800, 4**7 * 500),  # 4^7 * 500
+    (8, 1000, 4**8 * 500)  # 4^8 * 500
+]
+
+# Run the model for each parameter setting and calculate fidelity:
+fidelities = []
+for param in parameters:
+    n, batch_train, batch_val = param  # Unpack parameters
+    quantum_exp = QuantumExperiment(backend, n, shots)
+    quantum_exp.run_experiment()
+    # quantum_exp.print_circuits_with_counts()
+    train_loader, test_loader, val_loader, POVM_dataset = load_data(quantum_exp,
+                                                    first_run,
+                                                    backend,
+                                                    n,
+                                                    shots,
+                                                    split,
+                                                    [batch_train, batch_test, batch_val],
+                                                    shuffle, num_workers)
+
+    # Instantiate the model for the given parameters
+    model = SQVAE(n=n, batch_size=[batch_train, batch_train, batch_val],
+                beta=beta, num_steps=num_steps, learning_rate=learning_rate, shots=shots, device=device, dataset=POVM_dataset)
+
+    # Run the model and get the fidelity for the current parameter setting
+    fidelity_score = model.run(train=train, test=test, val=val,
+                           train_loader=train_loader, test_loader=test_loader,
+                           val_loader=val_loader, num_epochs=num_epochs)
+    # Append the fidelity score to the list
+    fidelities.append(fidelity_score)
+
+# Plot the histogram of fidelities
+plot_histogram(fidelities, parameters)

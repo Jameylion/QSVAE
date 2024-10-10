@@ -10,22 +10,47 @@ import pickle
 class QuantumPOVMDataset(Dataset):
     """Dataset for Quantum POVM measurements."""
 
-    def __init__(self, measurement_data, n, transform=None):
-        self.results = measurement_data
+    def __init__(self, measurement_data, n, shots, transform=None):
+        self.results = measurement_data.data
         self.n = n
         self.transform = transform
+        self.shots = shots
         self.measurements = self._process_measurements()
+        self.probability_true = self.measurements.sum(0)/self.shots
+        # print(self.measurements  ) 
+        # lt = self.measurements.shape[0]
+        # print(lt)
+        # print(self.measurements.sum(0)/self.shots)
+        # counts = measurement_data.get_counts()
+        # # for i in range(len(self.measurements)):
+        # #     print(self.results(0)['memory'][i],
+        # #           self.results(1)['memory'][i],
+        # #           self.results(2)['memory'][i],
+        # #           bin(int(self.results(3)['memory'][i],16))[2:].zfill(self.n))
+        # #     print(self.measurements[i])
 
     def _process_measurements(self):
         """Processes the measurement data into a usable format."""
         measurements = []
-        for r in range(4):
-            memory = self.results(r)['memory']
-            for mem in memory:
-                binary_string = bin(int(mem, 16))[2:].zfill(self.n)
-                binary_digit_arrays = [list(map(np.float32, list(b))) for b in binary_string]
-                measurements.extend(binary_digit_arrays)
-        return np.array(measurements).reshape(-1, 4 * self.n)
+        for s in range(self.shots):
+            bin_per_shot = []
+            for c in range(4):
+                mem = self.results(c)['memory']
+                binary_string = bin(int(mem[s], 16))[2:].zfill(self.n)
+
+                # Convert the binary string into an array of binary digits (0s and 1s)
+                binary_digit_array = list(map(int, list(binary_string)))  
+                bin_per_shot.extend(binary_digit_array)  # Add the digits to bin_per_shot
+
+            # Append the flattened list of bits for each shot
+            measurements.append(bin_per_shot)
+
+        # Convert measurements to a NumPy array
+        measurements_array = np.array(measurements, dtype=np.float32)
+
+        # print("Measurements shape:", measurements_array.shape)
+        return measurements_array
+
 
     def __len__(self):
         return len(self.measurements)
@@ -44,7 +69,7 @@ class QuantumPOVMDataset(Dataset):
 
         train_indices = list(range(split_train))
         test_indices = list(range(split_train, split_train + split_test))
-        val_indices = list(range(split_train + split_test, len(self)))
+        val_indices = list(range(split_val))
 
         train_set = Subset(self, train_indices)
         test_set = Subset(self, test_indices)
@@ -64,17 +89,15 @@ class ToTensor(object):
 
         return {'POVM': torch.from_numpy(povm)}
     
-def load_data(quantum_exp, first_run, backend, n, shots, split, batch_size, shuffle, num_workers):
+def load_data(result, circuits, first_run, backend, n, shots, split, batch_size, shuffle, num_workers):
     """Loads the quantum dataset, either by running an experiment or loading saved data."""
     if first_run:
-        result, circuits = quantum_exp.run_experiment()
-        POVM_dataset = QuantumPOVMDataset(result.data, n, transform=transforms.Compose([ToTensor()]))
-
-        with open('data\POVM_data.pkl', 'wb') as f:
+        POVM_dataset = QuantumPOVMDataset(result, n, shots, transform=transforms.Compose([ToTensor()]))
+        with open(f'data\datasets\POVM_data_{n}Qubit_{int(shots)}shots.pkl', 'wb') as f:
             pickle.dump({'dataset': POVM_dataset, 'circuits': circuits, 'result': result}, f)
             print("Dataset and circuit saved.")
     else:
-        with open('data\POVM_data.pkl', 'rb') as f:
+        with open(f'data\datasets\POVM_data_{n}Qubit_{int(shots)}shots.pkl', 'rb') as f:
             data = pickle.load(f)
             POVM_dataset = data['dataset']
             print("Dataset loaded.")
@@ -83,4 +106,4 @@ def load_data(quantum_exp, first_run, backend, n, shots, split, batch_size, shuf
                                                                        batch_size,
                                                                        shuffle,
                                                                        num_workers)
-    return train_loader, test_loader, val_loader
+    return train_loader, test_loader, val_loader, POVM_dataset

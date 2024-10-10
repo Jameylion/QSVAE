@@ -164,7 +164,7 @@ class Decoder(nn.Module):
 
 
 class SQVAE(Model):
-    def __init__(self, n, batch_size, beta, num_steps, learning_rate, device, first_run=True):
+    def __init__(self, n, batch_size, beta, num_steps, learning_rate, device, shots, first_run=True, dataset=None):
         super(SQVAE, self).__init__(encoder=None, decoder=None)
         # Model parameters
         self.n = n
@@ -174,11 +174,13 @@ class SQVAE(Model):
         self.learning_rate = learning_rate
         self.device = device
         self.first_run = first_run
+        self.dataset = dataset
 
         # Define the input, hidden, and output sizes
         self.inputs = 4 * n
         self.hidden = 32 * n
         self.outputs = 2 * 2**n
+        self.shots = shots
 
         # Initialize encoder and decoder as part of the model
         self.encoder = Encoder(self.inputs, self.hidden, self.outputs, self.beta, self.num_steps).to(self.device)
@@ -192,9 +194,9 @@ class SQVAE(Model):
 
         # If this is the first run, save the initial model state
         if first_run:
-            torch.save(self.model.state_dict(), "model.pt")
+            torch.save(self.model.state_dict(), f"data/models/model_{n}qubit_{int(shots)}shots.pt")
         else:
-            self.model.load_state_dict(torch.load("model.pt"))
+            self.model.load_state_dict(torch.load( f"data/models/model_{n}qubit_{int(shots)}shots.pt"))
 
         # Check for multiple GPUs and use DataParallel
         if torch.cuda.device_count() > 1:
@@ -213,9 +215,8 @@ class SQVAE(Model):
         """
         # Sample from a standard normal distribution (latent space)
         latent_dim = self.outputs  # The size of the latent space
-#         z = self.latent_z
+
         z = torch.randn(num_samples, latent_dim).to(self.device)  # Random samples from N(0, I)
-        print(z.shape)
 
         # Pass the sampled latent vectors through the decoder to reconstruct
         with torch.no_grad():
@@ -225,11 +226,12 @@ class SQVAE(Model):
 
     def run(self, train=True, test=True, val=True, train_loader=None, test_loader=None, val_loader=None, num_epochs=11):
         """Run the model with options for training, testing, and validation."""
+        fidelity_score = 0
         if train:
             # Initialize TensorBoard writer for training
             writer = SummaryWriter(log_dir='runs/Paperreproduction')
             self.train_model(train_loader,self.optimizer, self.device, num_epochs, writer)
-            torch.save(self.model.state_dict(), "model.pt")
+            torch.save(self.model.state_dict(), f"data/models/model_{self.n}qubit_{int(self.shots)}shots.pt")
 
         if test:
             # Initialize TensorBoard writer for testing
@@ -238,8 +240,9 @@ class SQVAE(Model):
             print("Average test loss: ", test_loss)
 
         if val:
-            prob_rec, prob_true = self.val_model(val_loader, self.device)
-            rho_rec, rho_true = reconstruct_matrix_from_prob(self.n,s_vectors, prob_rec, prob_true)
+            prob_rec = self.val_model(val_loader, self.device)
+            prob_true = self.dataset.probability_true
+            rho_rec, rho_true = reconstruct_matrix_from_prob(self.n,s_vectors, prob_rec.cpu(), prob_true)
             fidelity_score = fidelity(rho_rec, rho_true)
             print(f"The fidelity for {self.n} qubits is {fidelity_score} with {self.batch_size[2]} samples.")
 
@@ -247,6 +250,11 @@ class SQVAE(Model):
 
     def train_model(self, dataloader, optimizer, device, num_epochs, writer):
         self.model.train()
+
+        # Early stopping parameters
+        patience = 3  # Number of epochs to wait before stopping if no improvement
+        best_loss = float('inf')  # Initialize the best loss to a large value
+        epochs_no_improve = 0  # Counter for epochs without improvement
 
         # Initialize list for storing loss values
         train_loss = []
@@ -280,12 +288,12 @@ class SQVAE(Model):
 
                 # Log memory usage if on GPU
                 if torch.cuda.is_available():
-                    memory_allocated = torch.cuda.memory_allocated(device)
-                    memory_cached = torch.cuda.memory_reserved(device)
+                  memory_allocated = torch.cuda.memory_allocated(device)
+                  memory_cached = torch.cuda.memory_reserved(device)
 
-                    # Log memory usage to TensorBoard
-                    writer.add_scalar('Memory/Allocated_MB', memory_allocated / (1024 ** 2), epoch * len(dataloader) + batch_idx)
-                    writer.add_scalar('Memory/Cached_MB', memory_cached / (1024 ** 2), epoch * len(dataloader) + batch_idx)
+                  # Log memory usage to TensorBoard
+                  writer.add_scalar('Memory/Allocated_MB', memory_allocated / (1024 ** 2), epoch * len(dataloader) + batch_idx)
+                  writer.add_scalar('Memory/Cached_MB', memory_cached / (1024 ** 2), epoch * len(dataloader) + batch_idx)
 
             # Calculate and store the average loss for the epoch
             avg_epoch_loss = sum(epoch_loss) / len(dataloader)
@@ -294,6 +302,22 @@ class SQVAE(Model):
 
             # Log average epoch loss to TensorBoard
             writer.add_scalar('Loss/epoch', avg_epoch_loss, epoch)
+
+            # Check for early stopping
+            if avg_epoch_loss < best_loss:
+                best_loss = avg_epoch_loss
+                epochs_no_improve = 0
+                # Save the best model
+                torch.save(self.model.state_dict(), "data/best_model.pt")
+            else:
+                epochs_no_improve += 1
+                print(f"No improvement for {epochs_no_improve} epochs")
+
+            if epochs_no_improve >= patience:
+                print("Early stopping triggered")
+                # Load the best model state before stopping
+                self.model.load_state_dict(torch.load("data/best_model.pt"))
+                break
 
         # Finalize TensorBoard logging
         writer.flush()
@@ -400,7 +424,7 @@ class SQVAE(Model):
         # avg_test_loss = sum(test_loss) / len(dataloader)
         lt = sample_batched.shape[0]
         # print(probabilities[0].shape)
-        return probabilities[0].sum(0)/lt, sample_batched.sum(0)/lt
+        return probabilities[0].sum(0)/lt
 
 def plot_cur_mem_spk(cur, mem, spk, thr_line=False, vline=False, title=False,
                      ylim_max1=1.25, ylim_max2=1.25, neuron_index=0):
@@ -481,3 +505,42 @@ def plot_histogram(fidelities, parameters):
   # Display the plot
   plt.tight_layout()  # Adjust layout to prevent label cutoff
   plt.show()
+
+def fidelity(rho, sigma):
+  # Calculate the square root of the first density matrix
+  sqrt_rho = sqrtm(rho)
+
+  # Calculate the intermediate matrix product sqrt(rho) * sigma * sqrt(rho)
+  product_matrix = sqrt_rho @ sigma @ sqrt_rho
+
+  # Calculate the square root of the product matrix
+  sqrt_product_matrix = sqrtm(product_matrix)
+
+  # Calculate the trace of the square root of the product matrix
+  fidelity_value = np.trace(sqrt_product_matrix)
+
+  # Square the trace to get the fidelity
+  fidelity_value = np.real(fidelity_value) ** 2  
+
+  return fidelity_value
+
+def reconstruct_matrix_from_prob(n, s_vectors, prob_rec, prob_true):
+
+  povm_matrices_n_qubits = tensor_product_povm_matrices(n, s_vectors)
+
+  # Initialize the density matrix for n qubits (size 2^n x 2^n)
+  dim = 2**n
+  rho_rec = np.zeros((dim, dim), dtype=np.complex128)
+  rho_true = np.zeros((dim, dim), dtype=np.complex128)
+
+
+  # Reconstruct the density matrix using the POVM matrices and probabilities
+  for i in range(len(prob_rec)):
+      rho_rec += prob_rec[i].item() * povm_matrices_n_qubits[i]
+      rho_true += prob_true[i] * povm_matrices_n_qubits[i] #.cpu().item()
+
+  # Normalize the density matrix to ensure the trace is 1
+  rho_rec /= np.trace(rho_rec)
+  rho_true /= np.trace(rho_true)
+
+  return rho_rec, rho_true
