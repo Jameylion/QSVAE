@@ -54,26 +54,29 @@ parameters = [
 fidelities = []
 for param in parameters:
     n, batch_train, batch_val = param  # Unpack parameters
+    result, circuits = None, None
     quantum_exp = QuantumExperiment(backend, n, shots)
-    quantum_exp.run_experiment()
-    # quantum_exp.print_circuits_with_counts()
-    train_loader, test_loader, val_loader, POVM_dataset = load_data(quantum_exp,
-                                                    first_run,
-                                                    backend,
-                                                    n,
-                                                    shots,
-                                                    split,
-                                                    [batch_train, batch_test, batch_val],
-                                                    shuffle, num_workers)
+    result, circuits = quantum_exp.run_experiment()
+
+    train_loader, test_loader, val_loader, POVM_dataset = load_data(result,
+                                                                    circuits,
+                                                                    first_run,
+                                                                    backend,
+                                                                    n,
+                                                                    shots,
+                                                                    split,
+                                                                    [batch_train, batch_test, batch_val],
+                                                                    shuffle, num_workers)
 
     # Instantiate the model for the given parameters
     model = SQVAE(n=n, batch_size=[batch_train, batch_train, batch_val],
-                beta=beta, num_steps=num_steps, learning_rate=learning_rate, shots=shots, device=device, dataset=POVM_dataset)
+                beta=beta, num_steps=num_steps, learning_rate=learning_rate,
+                    shots=shots, device=device, dataset=POVM_dataset)
 
     # Run the model and get the fidelity for the current parameter setting
     fidelity_score = model.run(train=train, test=test, val=val,
-                           train_loader=train_loader, test_loader=test_loader,
-                           val_loader=val_loader, num_epochs=num_epochs)
+                            train_loader=train_loader, test_loader=test_loader,
+                            val_loader=val_loader, num_epochs=num_epochs)
     # Append the fidelity score to the list
     fidelities.append(fidelity_score)
 

@@ -53,7 +53,7 @@ model = SQVAE(n=n, batch_size=[batch_train, batch_train, batch_val],
                 shots=shots, device=device, dataset=POVM_dataset)
 
 # Run the model and get the fidelity for the current parameter setting
-fidelity_score = model.run(train=True, test=False, val=True,
+fidelity_score = model.run(train=train, test=test, val=val,
                            train_loader=train_loader, test_loader=test_loader,
                            val_loader=val_loader, num_epochs=num_epochs)
 
