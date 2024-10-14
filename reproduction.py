@@ -26,9 +26,9 @@ first_run = True
 # Support for "Starmon-5" and "AerSimulator" 
 backend_type = "AerSimulator"
 backend = select_backend(backend_type)
-train = False
+train = True
 test = False
-val = False
+val = True
 
 # Define hyperparameters
 beta = 0.819
@@ -38,7 +38,7 @@ learning_rate = 1e-3
 batch_train, batch_test, batch_val = (10000, 200, 1000)
 num_workers = 0
 shuffle = False
-split = [0.6, 0.2]
+split = [0.6, 0.2, 4**n *500]
 
 # Reproduction of paper
 parameters = [
@@ -53,7 +53,7 @@ parameters = [
 # Run the model for each parameter setting and calculate fidelity:
 fidelities = []
 for param in parameters:
-    n, batch_train, batch_val = param  # Unpack parameters
+    n, batch_train, split[2] = param  # Unpack parameters
     result, circuits = None, None
     quantum_exp = QuantumExperiment(backend, n, shots)
     result, circuits = quantum_exp.run_experiment()
@@ -71,7 +71,7 @@ for param in parameters:
     # Instantiate the model for the given parameters
     model = SQVAE(n=n, batch_size=[batch_train, batch_train, batch_val],
                 beta=beta, num_steps=num_steps, learning_rate=learning_rate,
-                    shots=shots, device=device, dataset=POVM_dataset)
+                    shots=shots, device=device, dataset=POVM_dataset, s_vectors = s_vectors)
 
     # Run the model and get the fidelity for the current parameter setting
     fidelity_score = model.run(train=train, test=test, val=val,

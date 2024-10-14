@@ -1,20 +1,25 @@
 import torch
 import torch.nn as nn
-from tqdm.notebook import tqdm
+from tqdm import tqdm
 import snntorch as snn
 from snntorch import spikeplot as splt
 from snntorch import spikegen
-
-
-
 from torch.nn import DataParallel
 # from src.Quantum_circuits import *
+from itertools import product
+from scipy.linalg import sqrtm
 
 import os
 import numpy as np
 import pandas as pd
 from torch.utils.tensorboard import SummaryWriter
 import matplotlib.pyplot as plt
+
+# Define the Pauli matrices
+I = np.eye(2)
+sigma_x = np.array([[0, 1], [1, 0]])
+sigma_y = np.array([[0, -1j], [1j, 0]])
+sigma_z = np.array([[1, 0], [0, -1]])
 
 
 class Model(torch.nn.Module):
@@ -164,7 +169,8 @@ class Decoder(nn.Module):
 
 
 class SQVAE(Model):
-    def __init__(self, n, batch_size, beta, num_steps, learning_rate, device, shots, first_run=True, dataset=None):
+    def __init__(self, n, batch_size, beta, num_steps, learning_rate, device, shots,
+                  first_run=True, dataset=None,s_vectors = None):
         super(SQVAE, self).__init__(encoder=None, decoder=None)
         # Model parameters
         self.n = n
@@ -175,6 +181,7 @@ class SQVAE(Model):
         self.device = device
         self.first_run = first_run
         self.dataset = dataset
+        self.s_vectors = s_vectors
 
         # Define the input, hidden, and output sizes
         self.inputs = 4 * n
@@ -198,10 +205,10 @@ class SQVAE(Model):
         else:
             self.model.load_state_dict(torch.load( f"data/models/model_{n}qubit_{int(shots)}shots.pt"))
 
-        # Check for multiple GPUs and use DataParallel
-        if torch.cuda.device_count() > 1:
-            print(f"Using {torch.cuda.device_count()} GPUs for training.")
-            self.model = DataParallel(self.model)
+        # # Check for multiple GPUs and use DataParallel
+        # if torch.cuda.device_count() > 1:
+        #     print(f"Using {torch.cuda.device_count()} GPUs for training.")
+        #     self.model = DataParallel(self.model)
 
     def sample_latent_space(self, num_samples):
         """
@@ -236,13 +243,13 @@ class SQVAE(Model):
         if test:
             # Initialize TensorBoard writer for testing
             writer = SummaryWriter(log_dir='runs/test_experiment')
-            test_loss = self.test_model(test_loader, writer)
+            test_loss = self.test_model(test_loader, self.device, writer)
             print("Average test loss: ", test_loss)
 
         if val:
             prob_rec = self.val_model(val_loader, self.device)
             prob_true = self.dataset.probability_true
-            rho_rec, rho_true = reconstruct_matrix_from_prob(self.n,s_vectors, prob_rec.cpu(), prob_true)
+            rho_rec, rho_true = self.reconstruct_matrix_from_prob(prob_rec.cpu(), prob_true)
             fidelity_score = fidelity(rho_rec, rho_true)
             print(f"The fidelity for {self.n} qubits is {fidelity_score} with {self.batch_size[2]} samples.")
 
@@ -325,7 +332,7 @@ class SQVAE(Model):
 
         return self.model
 
-    def test_model(self, model, dataloader, device, writer):
+    def test_model(self, dataloader, device, writer):
         """
         Function to test the model on the test dataset and log the loss and memory usage to TensorBoard.
 
@@ -339,7 +346,7 @@ class SQVAE(Model):
         """
         torch.cuda.empty_cache()
 
-        model.eval()  # Set the model to evaluation mode
+        self.model.eval()  # Set the model to evaluation mode
         test_loss = []
 
         data = iter(dataloader)
@@ -347,8 +354,8 @@ class SQVAE(Model):
             sample_batched = sample_batched['POVM'].to(device)
 
             with torch.no_grad():  # Disable gradient calculation for testing
-                spk, mem, mean, log_var = model(sample_batched)
-                loss = model.loss_function(spk.sum(0), sample_batched, mean, log_var)
+                spk, mem, mean, log_var = self.model(sample_batched)
+                loss = self.model.loss_function(spk.sum(0), sample_batched, mean, log_var)
 
                 # Log test loss to TensorBoard after each batch
                 writer.add_scalar('Loss/test', loss.item(), batch_idx)
@@ -418,13 +425,52 @@ class SQVAE(Model):
                 del spk, mem, mean, log_var, prob
                 torch.cuda.empty_cache()
 
-                break;
-
         # Calculate and return the average test loss over the dataset
         # avg_test_loss = sum(test_loss) / len(dataloader)
         lt = sample_batched.shape[0]
         # print(probabilities[0].shape)
         return probabilities[0].sum(0)/lt
+    
+    def tensor_product_povm_matrices(self, s):
+
+      # Create the M^(alpha) matrices for a single qubit
+      single_qubit_povm_matrices = [create_povm_matrix(s) for s in self.s_vectors]
+      # Create all combinations of POVM outcomes for n qubits
+      combinations = product(single_qubit_povm_matrices, repeat=self.n)
+
+      # Calculate the tensor products for each combination
+      povm_matrices_n_qubits = []
+      for comb in combinations:
+          povm_matrix = comb[0]
+          for matrix in comb[1:]:
+              povm_matrix = np.kron(povm_matrix, matrix)  # Tensor product
+          povm_matrices_n_qubits.append(povm_matrix)
+
+      return povm_matrices_n_qubits
+    
+    def reconstruct_matrix_from_prob(self, prob_rec, prob_true):
+
+      povm_matrices_n_qubits = self.tensor_product_povm_matrices(4)
+
+      # Initialize the density matrix for n qubits (size 2^n x 2^n)
+      dim = 2**self.n
+      rho_rec = np.zeros((dim, dim), dtype=np.complex128)
+      rho_true = np.zeros((dim, dim), dtype=np.complex128)
+
+
+      # Reconstruct the density matrix using the POVM matrices and probabilities
+      for i in range(len(prob_rec)):
+          rho_rec += prob_rec[i].item() * povm_matrices_n_qubits[i]
+          rho_true += prob_true[i] * povm_matrices_n_qubits[i] #.cpu().item()
+
+      # Normalize the density matrix to ensure the trace is 1
+      rho_rec /= np.trace(rho_rec)
+      rho_true /= np.trace(rho_true)
+
+      return rho_rec, rho_true
+
+def create_povm_matrix(s):
+    return (1/4) * (I + s[0] * sigma_x + s[1] * sigma_y + s[2] * sigma_z)
 
 def plot_cur_mem_spk(cur, mem, spk, thr_line=False, vline=False, title=False,
                      ylim_max1=1.25, ylim_max2=1.25, neuron_index=0):
@@ -524,23 +570,5 @@ def fidelity(rho, sigma):
 
   return fidelity_value
 
-def reconstruct_matrix_from_prob(n, s_vectors, prob_rec, prob_true):
 
-  povm_matrices_n_qubits = tensor_product_povm_matrices(n, s_vectors)
-
-  # Initialize the density matrix for n qubits (size 2^n x 2^n)
-  dim = 2**n
-  rho_rec = np.zeros((dim, dim), dtype=np.complex128)
-  rho_true = np.zeros((dim, dim), dtype=np.complex128)
-
-
-  # Reconstruct the density matrix using the POVM matrices and probabilities
-  for i in range(len(prob_rec)):
-      rho_rec += prob_rec[i].item() * povm_matrices_n_qubits[i]
-      rho_true += prob_true[i] * povm_matrices_n_qubits[i] #.cpu().item()
-
-  # Normalize the density matrix to ensure the trace is 1
-  rho_rec /= np.trace(rho_rec)
-  rho_true /= np.trace(rho_true)
-
-  return rho_rec, rho_true
+# Function to create tensor products of POVM matrices for n qubits
