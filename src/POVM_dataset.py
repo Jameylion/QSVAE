@@ -16,8 +16,9 @@ class QuantumPOVMDataset(Dataset):
         self.transform = transform
         self.shots = shots
         self.measurements = self._process_measurements()
-        self.probability_true = self.measurements.sum(0)/self.shots
-        # print(self.measurements  ) 
+        self.probability_true = self.measurements.sum(0)/self.measurements.sum(0).sum(0)
+        # print(self.measurements.sum(0)/self.measurements.sum(0).sum(0)) 
+        # print((self.measurements.sum(0)/self.measurements.sum(0).sum(0)).sum(0))
         # lt = self.measurements.shape[0]
         # print(lt)
         # print(self.measurements.sum(0)/self.shots)

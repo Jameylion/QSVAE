@@ -10,7 +10,7 @@ from src.QSVAE_model import *
 from src.POVM_dataset import *
 # from torchvision import transforms, utils
 import matplotlib.gridspec as gridspec
-
+os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 if torch.cuda.is_available():
  dev = "cuda:0"
 #  dev = "cpu"
@@ -33,9 +33,9 @@ val = True
 # Define hyperparameters
 beta = 0.819
 num_steps = 200
-num_epochs = 6
+num_epochs = 1
 learning_rate = 1e-3
-batch_train, batch_test, batch_val = (10000, 200, 1000)
+batch_train, batch_test, batch_val = (10000, 200, 200)
 num_workers = 0
 shuffle = False
 split = [0.6, 0.2, 4**n *500]
@@ -71,7 +71,7 @@ for param in parameters:
     # Instantiate the model for the given parameters
     model = SQVAE(n=n, batch_size=[batch_train, batch_train, batch_val],
                 beta=beta, num_steps=num_steps, learning_rate=learning_rate,
-                    shots=shots, device=device, dataset=POVM_dataset, s_vectors = s_vectors)
+                    shots=shots, samples=split[2], device=device, dataset=POVM_dataset, s_vectors = s_vectors)
 
     # Run the model and get the fidelity for the current parameter setting
     fidelity_score = model.run(train=train, test=test, val=val,

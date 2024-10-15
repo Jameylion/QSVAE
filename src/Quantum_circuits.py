@@ -20,8 +20,8 @@ sigma_z = np.array([[1, 0], [0, -1]])
 s_vectors = [
     np.array([0, 0, 1]),  # s^(0)
     np.array([2 * np.sqrt(2) / 3, 0, -1 / 3]),  # s^(1)
-    np.array([-np.sqrt(2) / 3, np.sqrt(2) / 3, -1 / 3]),  # s^(2)
-    np.array([-np.sqrt(2) / 3, -np.sqrt(2) / 3, -1 / 3])  # s^(3)
+    np.array([-np.sqrt(2) / 3, np.sqrt(2/3), -1 / 3]),  # s^(2)
+    np.array([-np.sqrt(2) / 3, -np.sqrt(2/3), -1 / 3])  # s^(3)
 ]
 
 class QuantumExperiment:
