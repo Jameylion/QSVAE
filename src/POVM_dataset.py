@@ -65,7 +65,7 @@ class QuantumPOVMDataset(Dataset):
         """Splits the dataset into training, testing, and validation sets."""
         split_train = int(split[0] * len(self))
         split_test = int(split[1] * len(self))
-        split_val = len(self) - split_train - split_test
+        split_val = split[2]
 
         train_indices = list(range(split_train))
         test_indices = list(range(split_train, split_train + split_test))
