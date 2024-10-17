@@ -415,11 +415,14 @@ class SQVAE(Model):
         # data = iter(dataloader)
         # for batch_idx, sample_batched in enumerate(tqdm(data)):
         
-        for i in range(0, self.samples, self.batch_size[2]):
+        for i in tqdm(range(0, self.samples, self.batch_size[2])):
             
             # sample_batched = sample_batched['POVM'].to(device)
             # Random samples from N(0, I)
-            samples_z = torch.randn(self.batch_size[2], self.outputs).to(self.device) 
+            # if self.device == "cpu":
+            #   samples_z = torch.randn(self.batch_size[2], self.outputs).to(self.device) 
+            # else:
+            samples_z = torch.randn(self.batch_size[2], self.outputs, dtype = torch.float32, device = self.device)
             # print(samples_z.shape)
 
             with torch.no_grad():  # Disable gradient calculation for testing

@@ -35,7 +35,7 @@ beta = 0.819
 num_steps = 200
 num_epochs = 1
 learning_rate = 1e-3
-batch_train, batch_test, batch_val = (10000, 200, 200)
+batch_train, batch_test, batch_val = (10000, 200, 1000)
 num_workers = 0
 shuffle = False
 split = [0.6, 0.2, 4**n *500]
@@ -50,35 +50,37 @@ parameters = [
     (8, 1000, 4**8 * 500)  # 4^8 * 500
 ]
 
-# Run the model for each parameter setting and calculate fidelity:
-fidelities = []
-for param in parameters:
-    n, batch_train, split[2] = param  # Unpack parameters
-    result, circuits = None, None
-    quantum_exp = QuantumExperiment(backend, n, shots)
-    result, circuits = quantum_exp.run_experiment()
+if __name__ == '__main__':
+   
+    # Run the model for each parameter setting and calculate fidelity:
+    fidelities = []
+    for param in parameters:
+        n, batch_train, split[2] = param  # Unpack parameters
+        result, circuits = None, None
+        quantum_exp = QuantumExperiment(backend, n, shots)
+        result, circuits = quantum_exp.run_experiment()
 
-    train_loader, test_loader, val_loader, POVM_dataset = load_data(result,
-                                                                    circuits,
-                                                                    first_run,
-                                                                    backend,
-                                                                    n,
-                                                                    shots,
-                                                                    split,
-                                                                    [batch_train, batch_test, batch_val],
-                                                                    shuffle, num_workers)
+        train_loader, test_loader, val_loader, POVM_dataset = load_data(result,
+                                                                        circuits,
+                                                                        first_run,
+                                                                        backend,
+                                                                        n,
+                                                                        shots,
+                                                                        split,
+                                                                        [batch_train, batch_test, batch_val],
+                                                                        shuffle, num_workers)
 
-    # Instantiate the model for the given parameters
-    model = SQVAE(n=n, batch_size=[batch_train, batch_train, batch_val],
-                beta=beta, num_steps=num_steps, learning_rate=learning_rate,
-                    shots=shots, samples=split[2], device=device, dataset=POVM_dataset, s_vectors = s_vectors)
+        # Instantiate the model for the given parameters
+        model = SQVAE(n=n, batch_size=[batch_train, batch_train, batch_val],
+                    beta=beta, num_steps=num_steps, learning_rate=learning_rate,
+                        shots=shots, samples=split[2], device=device, dataset=POVM_dataset, s_vectors = s_vectors)
 
-    # Run the model and get the fidelity for the current parameter setting
-    fidelity_score = model.run(train=train, test=test, val=val,
-                            train_loader=train_loader, test_loader=test_loader,
-                            val_loader=val_loader, num_epochs=num_epochs)
-    # Append the fidelity score to the list
-    fidelities.append(fidelity_score)
+        # Run the model and get the fidelity for the current parameter setting
+        fidelity_score = model.run(train=train, test=test, val=val,
+                                train_loader=train_loader, test_loader=test_loader,
+                                val_loader=val_loader, num_epochs=num_epochs)
+        # Append the fidelity score to the list
+        fidelities.append(fidelity_score)
 
-# Plot the histogram of fidelities
-plot_histogram(fidelities, parameters)
+    # Plot the histogram of fidelities
+    plot_histogram(fidelities, parameters)
