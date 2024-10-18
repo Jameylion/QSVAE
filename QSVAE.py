@@ -22,7 +22,7 @@ first_run = True
 backend_type = "AerSimulator"
 backend = select_backend(backend_type)
 train = True
-test = True
+test = False
 val = True
 
 # Define hyperparameters
@@ -30,7 +30,7 @@ beta = 0.819
 num_steps = 200
 num_epochs = 1
 learning_rate = 1e-3
-batch_train, batch_test, batch_val = (1000, 200, 20000)
+batch_train, batch_test, batch_val = (1000, 200, 40000)
 num_workers = 0
 shuffle = False
 split = [0.6, 0.2, 1000]

@@ -42,12 +42,12 @@ split = [0.6, 0.2, 4**n *500]
 
 # Reproduction of paper
 parameters = [
-    (3, 100, 20_000),
-    (4, 200, 100_000),
-    (5, 500, 4**5 * 500),  # 4^5 * 500
-    (6, 600, 4**6 * 500),  # 4^6 * 500
-    (7, 800, 4**7 * 500),  # 4^7 * 500
-    (8, 1000, 4**8 * 500)  # 4^8 * 500
+    (3, 100, 20_000, 20_000),
+    (4, 200, 100_000, 40_000),
+    (5, 500, 4**5 * 500,40_000),  # 4^5 * 500
+    (6, 600, 4**6 * 500, 40_000),  # 4^6 * 500
+    (7, 800, 4**7 * 500, 40_000),  # 4^7 * 500
+    (8, 1000, 4**8 * 500,40_000)  # 4^8 * 500
 ]
 
 if __name__ == '__main__':
@@ -55,7 +55,7 @@ if __name__ == '__main__':
     # Run the model for each parameter setting and calculate fidelity:
     fidelities = []
     for param in parameters:
-        n, batch_train, split[2] = param  # Unpack parameters
+        n, batch_train, split[2], batch_val = param  # Unpack parameters
         result, circuits = None, None
         quantum_exp = QuantumExperiment(backend, n, shots)
         result, circuits = quantum_exp.run_experiment()
