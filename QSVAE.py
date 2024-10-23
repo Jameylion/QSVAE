@@ -15,8 +15,8 @@ device = torch.device(dev)
 print(device)
 torch.__version__
 
-n = 7 # Amount of qubits
-shots = 100_000 # amount of shots taken by the quantum simulator
+n = 3 # Amount of qubits
+shots = 100_0 # amount of shots taken by the quantum simulator
 first_run = True
 # Support for "Starmon-5" and "AerSimulator" 
 backend_type = "AerSimulator"
@@ -30,7 +30,7 @@ beta = 0.819
 num_steps = 200
 num_epochs = 1
 learning_rate = 1e-3
-batch_train, batch_test, batch_val = (1000, 200, 40000)
+batch_train, batch_test, batch_val = (100, 200, 400)
 num_workers = 0
 shuffle = False
 split = [0.6, 0.2, 1000]

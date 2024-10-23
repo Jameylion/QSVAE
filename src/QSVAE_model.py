@@ -52,10 +52,15 @@ class Model(torch.nn.Module):
       eps = torch.randn(std.shape).to(self.device)
 
       return mean + eps * std
+    
+    def firing_rate(self, spk):
+      #  print(spk.shape)
+      #  print((spk.sum(0)/spk.shape[0]).shape)
+       return spk.sum(0)/spk.shape[0]
 
     def loss_function(self, x_hat, x, mean, log_var):
      # Calculate reconstruction loss (example: MSE)
-      reconstruction_loss = nn.MSELoss()(x_hat.reshape(-1), x.reshape(-1))
+      reconstruction_loss = nn.MSELoss()(x_hat, x)
 
       # Calculate KL divergence
       kl_divergence = -0.5 * torch.sum(1 + log_var - mean.pow(2) - log_var.exp())
@@ -74,7 +79,37 @@ class Model(torch.nn.Module):
       del spk
 
       return mean, variance
+    
+    def reparam_poisson(self, r, spk):
+       u = torch.rand(spk.shape).to(self.device)
+       z = (u < r.unsqueeze(0)).float()
+       return z
+       
 
+    def forward(self, x):
+        spk, mem = self.encoder(x)
+        mean, log_var = self.calc_mean_var(spk)
+        # self.plot_spikes(spk, mem, cur)
+        # shape skp = [num_steps, batch_size, input_size]
+        # torch.set_printoptions(profile="full")
+        # print(self.firing_rate(spk)) # prints the whole tensor
+        # torch.set_printoptions(profile="default") # reset
+        
+        r = self.firing_rate(spk)
+        # print("z = ", self.reparam_poisson(r, spk))
+        # z = self.reparameterization(mean, torch.exp(0.5 * log_var))
+        z = self.reparam_poisson(r, spk)
+
+        print(z.shape)
+
+        spk, mem = self.decoder(z)
+
+        del z, r
+        torch.cuda.empty_cache()
+        # print(type(x_hat))
+
+        return spk, mem, mean, log_var
+    
     def plot_spikes(self, spk, mem, cur, ende):
       max_spk_index = torch.argmax(spk.sum(0)) % ende
       print(torch.argmax(spk.sum(0)), torch.max(spk.sum(0)), spk.shape)
@@ -87,22 +122,6 @@ class Model(torch.nn.Module):
                          spk.detach().cpu(), thr_line=1,ylim_max1=0.5,
         title="LIF Neuron that spikes the most from the output of the decoder",
                      neuron_index = max_spk_index)
-
-
-    def forward(self, x):
-        spk, mem = self.encoder(x)
-        mean, log_var = self.calc_mean_var(spk)
-        # self.plot_spikes(spk, mem, cur)
-
-        z = self.reparameterization(mean, torch.exp(0.5 * log_var))
-
-        spk, mem = self.decoder(z)
-
-        del z
-        torch.cuda.empty_cache()
-        # print(type(x_hat))
-
-        return spk, mem, mean, log_var
 
 # @title Class Encoder
 class Encoder(nn.Module):
@@ -210,32 +229,6 @@ class SQVAE(Model):
         else:
             self.model.load_state_dict(torch.load( f"data/models/model_{n}qubit_{int(shots)}shots.pt"))
 
-        # # Check for multiple GPUs and use DataParallel
-        # if torch.cuda.device_count() > 1:
-        #     print(f"Using {torch.cuda.device_count()} GPUs for training.")
-        #     self.model = DataParallel(self.model)
-
-    # def sample_latent_space(self, num_samples):
-    #     """
-    #     Samples from the latent space and reconstructs using the decoder.
-
-    #     Args:
-    #         num_samples (int): Number of latent samples to generate.
-
-    #     Returns:
-    #         reconstructed_samples: Reconstructed samples from the latent space.
-    #     """
-    #     # Sample from a standard normal distribution (latent space)
-    #     latent_dim = self.outputs  # The size of the latent space
-
-    #     z = torch.randn(num_samples, latent_dim).to(self.device)  
-
-    #     # Pass the sampled latent vectors through the decoder to reconstruct
-    #     with torch.no_grad():
-    #         reconstructed_samples = self.decoder(z)
-
-    #     return reconstructed_samples
-
     def run(self, train=True, test=True, val=True, train_loader=None, test_loader=None, val_loader=None, num_epochs=11):
         """Run the model with options for training, testing, and validation."""
         fidelity_score = 0
@@ -284,7 +277,8 @@ class SQVAE(Model):
 
                 # Forward pass
                 spk, mem, mean, log_var = self.model(sample_batched)
-
+                print(spk.shape)
+                print(sample_batched.shape)
                 # Calculate loss
                 loss = self.model.loss_function(spk.sum(0), sample_batched, mean, log_var)
                 loss.backward()
@@ -362,7 +356,7 @@ class SQVAE(Model):
 
             with torch.no_grad():  # Disable gradient calculation for testing
                 spk, mem, mean, log_var = self.model(sample_batched)
-                loss = self.model.loss_function(spk.sum(0), sample_batched, mean, log_var)
+                loss = self.model.loss_function(spk, sample_batched, mean, log_var)
 
                 # Log test loss to TensorBoard after each batch
                 writer.add_scalar('Loss/test', loss.item(), batch_idx)
