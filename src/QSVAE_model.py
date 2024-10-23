@@ -132,7 +132,9 @@ class Encoder(nn.Module):
       spk2_rec.append(spk2)
       mem2_rec.append(mem2)
 
-    del mem1, mem2, spk1, spk2, cur1, cur2
+      del cur1, cur2, spk1, spk2
+
+    del mem1, mem2
 
     return torch.stack(spk2_rec, dim=0), torch.stack(mem2_rec, dim=0)
 
@@ -163,7 +165,9 @@ class Decoder(nn.Module):
       spk2_rec.append(spk2)
       mem2_rec.append(mem2)
 
-    del mem1, mem2, spk1, spk2, cur1, cur2
+      del cur1, cur2, spk1, spk2
+
+    del mem1, mem2
 
     return torch.stack(spk2_rec, dim=0), torch.stack(mem2_rec, dim=0)
 
@@ -293,14 +297,14 @@ class SQVAE(Model):
                 del spk, mem, mean, log_var, loss
                 torch.cuda.empty_cache()
 
-                # Log memory usage if on GPU
-                if torch.cuda.is_available():
-                  memory_allocated = torch.cuda.memory_allocated(device)
-                  memory_cached = torch.cuda.memory_reserved(device)
+                # # Log memory usage if on GPU
+                # if torch.cuda.is_available():
+                #   memory_allocated = torch.cuda.memory_allocated(device)
+                #   memory_cached = torch.cuda.memory_reserved(device)
 
-                  # Log memory usage to TensorBoard
-                  writer.add_scalar('Memory/Allocated_MB', memory_allocated / (1024 ** 2), epoch * len(dataloader) + batch_idx)
-                  writer.add_scalar('Memory/Cached_MB', memory_cached / (1024 ** 2), epoch * len(dataloader) + batch_idx)
+                #   # Log memory usage to TensorBoard
+                #   writer.add_scalar('Memory/Allocated_MB', memory_allocated / (1024 ** 2), epoch * len(dataloader) + batch_idx)
+                #   writer.add_scalar('Memory/Cached_MB', memory_cached / (1024 ** 2), epoch * len(dataloader) + batch_idx)
 
             # Calculate and store the average loss for the epoch
             avg_epoch_loss = sum(epoch_loss) / len(dataloader)
@@ -363,14 +367,14 @@ class SQVAE(Model):
                 # Append the loss for the current batch
                 test_loss.append(loss.item())
 
-                # Log memory usage if on GPU
-                if torch.cuda.is_available():
-                    memory_allocated = torch.cuda.memory_allocated(device)
-                    memory_cached = torch.cuda.memory_reserved(device)
+                # # Log memory usage if on GPU
+                # if torch.cuda.is_available():
+                #     memory_allocated = torch.cuda.memory_allocated(device)
+                #     memory_cached = torch.cuda.memory_reserved(device)
 
-                    # Log memory usage to TensorBoard
-                    writer.add_scalar('Memory/Allocated_MB', memory_allocated / (1024 ** 2), batch_idx)
-                    writer.add_scalar('Memory/Cached_MB', memory_cached / (1024 ** 2), batch_idx)
+                #     # Log memory usage to TensorBoard
+                #     writer.add_scalar('Memory/Allocated_MB', memory_allocated / (1024 ** 2), batch_idx)
+                #     writer.add_scalar('Memory/Cached_MB', memory_cached / (1024 ** 2), batch_idx)
 
                 # Free up memory
                 del spk, mem, mean, log_var, loss
@@ -411,8 +415,6 @@ class SQVAE(Model):
             samples_z = self.sample_latent_space(sample_batched.shape[0])
 
             with torch.no_grad():  # Disable gradient calculation for testing
-                if isinstance(samples_z, tuple):
-                    samples_z = samples_z[0]  # Ensure it is a Tensor
 
                 spk, mem, mean, log_var = self.model(samples_z)
                 l = spk.shape[1]
@@ -422,7 +424,7 @@ class SQVAE(Model):
                 probabilities.append(prob)
 
                 # Free up memory
-                del spk, mem, mean, log_var, prob
+                del spk, mem, mean, log_var, prob, samples_z
                 torch.cuda.empty_cache()
 
         # Calculate and return the average test loss over the dataset
