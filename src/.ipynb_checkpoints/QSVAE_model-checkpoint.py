@@ -53,10 +53,15 @@ class Model(torch.nn.Module):
       eps = torch.randn(std.shape).to(self.device)
 
       return mean + eps * std
+    
+    def firing_rate(self, spk):
+      #  print(spk.shape)
+      #  print((spk.sum(0)/spk.shape[0]).shape)
+       return spk.sum(0)/spk.shape[0]
 
     def loss_function(self, x_hat, x, mean, log_var):
      # Calculate reconstruction loss (example: MSE)
-      reconstruction_loss = nn.MSELoss()(x_hat.reshape(-1), x.reshape(-1))
+      reconstruction_loss = nn.MSELoss()(x_hat, x)
 
       # Calculate KL divergence
       kl_divergence = -0.5 * torch.sum(1 + log_var - mean.pow(2) - log_var.exp())
@@ -75,31 +80,33 @@ class Model(torch.nn.Module):
       del spk
 
       return mean, variance
-
-    def plot_spikes(self, spk, mem, cur, ende):
-      max_spk_index = torch.argmax(spk.sum(0)) % ende
-      print(torch.argmax(spk.sum(0)), torch.max(spk.sum(0)), spk.shape)
-      print("max spike index\n", torch.remainder(max_spk_index,  ende))
-      print("spike sum shape per output over all time steps\n",spk.sum(0).shape)
-      print("spike sum per output over all time steps\n",spk.sum(0))
-
-
-      plot_cur_mem_spk(cur.detach().cpu().numpy(), mem.detach().cpu(),
-                         spk.detach().cpu(), thr_line=1,ylim_max1=0.5,
-        title="LIF Neuron that spikes the most from the output of the decoder",
-                     neuron_index = max_spk_index)
-
+    
+    def reparam_poisson(self, r, spk):
+       u = torch.rand(spk.shape).to(self.device)
+       z = (u < r.unsqueeze(0)).float()
+       return z
+       
 
     def forward(self, x):
         spk, mem = self.encoder(x)
         mean, log_var = self.calc_mean_var(spk)
         # self.plot_spikes(spk, mem, cur)
+        # shape skp = [num_steps, batch_size, input_size]
+        # torch.set_printoptions(profile="full")
+        # print(self.firing_rate(spk)) # prints the whole tensor
+        # torch.set_printoptions(profile="default") # reset
+        
+        r = self.firing_rate(spk)
+        print("firing rate = ", r)
+        # print("z = ", self.reparam_poisson(r, spk))
+        # z = self.reparameterization(mean, torch.exp(0.5 * log_var))
+        z = self.reparam_poisson(r, spk)
 
-        z = self.reparameterization(mean, torch.exp(0.5 * log_var))
-#         self.latent_z = z
+        # print(z.shape)
+
         spk, mem = self.decoder(z)
 
-        del z
+        del z, r
         torch.cuda.empty_cache()
         # print(type(x_hat))
 
@@ -133,8 +140,8 @@ class Encoder(nn.Module):
         spk2_rec.append(spk2)
         mem2_rec.append(mem2)
 
-        del spk1, spk2, cur1, cur2
-    del mem1, mem2
+        # del spk1, spk2, cur1, cur2
+    del mem1, mem2, spk1, spk2, cur1, cur2
 
     return torch.stack(spk2_rec, dim=0), torch.stack(mem2_rec, dim=0)
 
@@ -173,8 +180,8 @@ class Decoder(nn.Module):
 
 
 class SQVAE(Model):
-    def __init__(self, n, batch_size, beta, num_steps, learning_rate, device, shots,
-                  first_run=True, dataset=None,s_vectors = None):
+    def __init__(self, n, batch_size, beta, num_steps, learning_rate, device, shots, samples,
+                  first_run=True, dataset=None,s_vectors=None):
         super(SQVAE, self).__init__(encoder=None, decoder=None)
         # Model parameters
         self.n = n
@@ -186,10 +193,11 @@ class SQVAE(Model):
         self.first_run = first_run
         self.dataset = dataset
         self.s_vectors = s_vectors
+        self.samples = samples
 
         # Define the input, hidden, and output sizes
         self.inputs = 4 * n
-        self.hidden = 32 * n
+        self.hidden = 20 * n
         self.outputs = 2 * 2**n
         self.shots = shots
         
@@ -198,23 +206,24 @@ class SQVAE(Model):
 
         # Initialize encoder and decoder as part of the model
         self.encoder = Encoder(self.inputs, self.hidden, self.outputs, self.beta, self.num_steps).to(self.device)
-        self.decoder = snn = SNN(
+        self.decoder = SNN(
                                 n_in=2 * 2**n,
                                 n_hidden= 32 *n,
                                 n_out=4 * n,
                                 mock=self.MOCK,
+                                calib_path="spiking2_cocolist.pbin",
                                 dt=self.DT,
-                                tau_mem=6.0e-06,
-                                tau_syn=6.0e-06,
-                                alpha=50.,
+                                tau_mem=8.0e-06, #6.0e-6
+                                tau_syn=8.0e-06,
+                                alpha=70.,
                                 trace_shift_hidden=int(.0e-06/self.DT),
                                 trace_shift_out=int(.0e-06/self.DT),
-                                weight_init_hidden=(0.001, 0.25),
-                                weight_init_output=(0.0, 0.1),
+                                weight_init_hidden=(0.1, 0.4),
+                                weight_init_output=(0.2, 0.3),
                                 weight_scale=66.39,
                                 trace_scale=0.0147,
-                                input_repetitions=1 if self.MOCK else 5,
-                                device=device).to(self.device)
+                                input_repetitions=1 if self.MOCK else 1,
+                                device=device)
 
         # Combine encoder and decoder into the model
         self.model = Model(self.encoder, self.decoder, device=device).to(self.device)
@@ -233,26 +242,6 @@ class SQVAE(Model):
         #     print(f"Using {torch.cuda.device_count()} GPUs for training.")
         #     self.model = DataParallel(self.model)
 
-    def sample_latent_space(self, num_samples):
-        """
-        Samples from the latent space and reconstructs using the decoder.
-
-        Args:
-            num_samples (int): Number of latent samples to generate.
-
-        Returns:
-            reconstructed_samples: Reconstructed samples from the latent space.
-        """
-        # Sample from a standard normal distribution (latent space)
-        latent_dim = self.outputs  # The size of the latent space
-
-        z = torch.randn(num_samples, latent_dim).to(self.device)  # Random samples from N(0, I)
-
-        # Pass the sampled latent vectors through the decoder to reconstruct
-        with torch.no_grad():
-            reconstructed_samples = self.decoder(z)
-
-        return reconstructed_samples
 
     def run(self, train=True, test=True, val=True, train_loader=None, test_loader=None, val_loader=None, num_epochs=11):
         """Run the model with options for training, testing, and validation."""
@@ -270,11 +259,13 @@ class SQVAE(Model):
             print("Average test loss: ", test_loss)
 
         if val:
-            prob_rec = self.val_model(val_loader, self.device)
+            prob_rec = self.val_model()
             prob_true = self.dataset.probability_true
-            rho_rec, rho_true = self.reconstruct_matrix_from_prob(prob_rec.cpu(), prob_true)
+            print(prob_rec, prob_true)
+            rho_rec, rho_true = self.reconstruct_matrix_from_prob(prob_rec, prob_true)
             fidelity_score = fidelity(rho_rec, rho_true)
-            print(f"The fidelity for {self.n} qubits is {fidelity_score} with {self.batch_size[2]} samples.")
+            # fidelity_score = fid(torch.from_numpy(prob_true), prob_rec)
+            print(f"The fidelity for {self.n} qubits is {fidelity_score} with {self.samples} samples.")
 
         return fidelity_score
 
@@ -410,7 +401,8 @@ class SQVAE(Model):
         writer.close()
 
         return avg_test_loss
-    def val_model(self, dataloader, device):
+    
+    def val_model(self):
         """
         Function to validate the model on the val dataset.
 
@@ -425,34 +417,51 @@ class SQVAE(Model):
         torch.cuda.empty_cache()
 
         self.model.eval()  # Set the model to evaluation mode
-        probabilities = []
+        spikes = []
 
-        data = iter(dataloader)
-        for batch_idx, sample_batched in enumerate(tqdm(data)):
-            sample_batched = sample_batched['POVM'].to(device)
-
-            samples_z = self.sample_latent_space(sample_batched.shape[0])
-
+        # data = iter(dataloader)
+        # for batch_idx, sample_batched in enumerate(tqdm(data)):
+        
+        for i in tqdm(range(0, self.samples, self.batch_size[2])):
+            
+            # sample_batched = sample_batched['POVM'].to(device)
+            # Random samples from N(0, I)
+            # if self.device == "cpu":
+            #   samples_z = torch.randn(self.batch_size[2], self.outputs).to(self.device) 
+            # else:
+            samples_z = torch.randn(self.batch_size[2], self.outputs, dtype = torch.float32, device = self.device)
+            # print(samples_z.shape)
+            samples_poisson = self.model.reparam_poisson(samples_z, torch.Tensor(self.num_steps, self.batch_size[2], self.outputs))
+            # print(samples_poisson, samples_poisson.shape)
             with torch.no_grad():  # Disable gradient calculation for testing
-                if isinstance(samples_z, tuple):
+                if isinstance(samples_z, tuple):\
                     samples_z = samples_z[0]  # Ensure it is a Tensor
 
-                spk, mem, mean, log_var = self.model(samples_z)
-                l = spk.shape[1]
-                prob = spk.sum(dim=(0, 1)) / l
-
+                spk, mem = self.model.decoder(samples_poisson) # spk.shape == [num_steps, batch, output neurons decoder]
+                # print("spk: ", spk.sum(dim=(0, 1)).shape)
+                # l = spk.shape[1]
+                # print(spk[int(i/100), int(i/100), :])
+                # prob = spk.sum(dim=(0, 1)) 
+                # print(prob)
                 # Append the prob for the current batch
-                probabilities.append(prob)
-
+                spikes.append(spk.sum(dim=(0, 1)))
+                # print(spk, spk.shape)
                 # Free up memory
-                del spk, mem, mean, log_var, prob
-                torch.cuda.empty_cache()
+                del spk, mem, samples_z
+                # torch.cuda.empty_cache()
 
         # Calculate and return the average test loss over the dataset
         # avg_test_loss = sum(test_loss) / len(dataloader)
-        lt = sample_batched.shape[0]
-        # print(probabilities[0].shape)
-        return probabilities[0].sum(0)/lt
+        tot_spikes_per_output = torch.stack(spikes, dim=0).sum(dim=0)
+        
+        print("tot_spikes_per_output", tot_spikes_per_output)
+        tot_spikes = tot_spikes_per_output.sum(0)
+        print("tot_spikes", tot_spikes)
+        probabilities = tot_spikes_per_output
+        print(probabilities.shape)
+        probabilities = torch.div(tot_spikes_per_output, tot_spikes)
+        print("probabilities", probabilities)
+        return probabilities
     
     def tensor_product_povm_matrices(self, s):
 
@@ -491,6 +500,9 @@ class SQVAE(Model):
       rho_true /= np.trace(rho_true)
 
       return rho_rec, rho_true
+    
+def fid(P_true, P_rec):
+    return torch.sqrt(torch.mul(P_true.to("cpu"), P_rec.to("cpu"))).sum(0)
 
 def create_povm_matrix(s):
     return (1/4) * (I + s[0] * sigma_x + s[1] * sigma_y + s[2] * sigma_z)
