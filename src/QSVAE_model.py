@@ -9,7 +9,7 @@ from torch.nn import DataParallel
 # from src.Quantum_circuits import *
 from itertools import product
 from scipy.linalg import sqrtm
-from src.SNN_brainscales import *
+# from src.SNN_brainscales import *
 import snntorch.functional as SF
 
 import os
@@ -256,25 +256,28 @@ class SQVAE():
 
         # Initialize encoder and decoder as part of the model
         self.encoder = Encoder(params).to(self.device)
-        self.decoder = SNN(
-            n_in=params.output_size,
-            n_hidden=params.hidden_size,
-            n_out=params.input_size,
-            mock=params.mock,
-            calib_path="spiking2_cocolist.pbin",
-            dt=self.DT,
-            tau_mem=8.0e-06, #6.0e-6
-            tau_syn=8.0e-06,
-            alpha=70.,
-            trace_shift_hidden=int(.0e-06/self.DT),
-            trace_shift_out=int(.0e-06/self.DT),
-            weight_init_hidden=(0.1, 0.4),
-            weight_init_output=(0.2, 0.3),
-            weight_scale=66.39,
-            trace_scale=0.0147,
-            input_repetitions=1 if self.MOCK else 1,
-            device=params.device
-        )
+        if not params.first_run:
+            self.decoder = SNN(
+                n_in=params.output_size,
+                n_hidden=params.hidden_size,
+                n_out=params.input_size,
+                mock=params.mock,
+                calib_path="spiking2_cocolist.pbin",
+                dt=self.DT,
+                tau_mem=8.0e-06, #6.0e-6
+                tau_syn=8.0e-06,
+                alpha=70.,
+                trace_shift_hidden=int(.0e-06/self.DT),
+                trace_shift_out=int(.0e-06/self.DT),
+                weight_init_hidden=(0.1, 0.4),
+                weight_init_output=(0.2, 0.3),
+                weight_scale=66.39,
+                trace_scale=0.0147,
+                input_repetitions=1 if self.MOCK else 1,
+                device=params.device
+            )
+        else:
+            self.decoder = Decoder(params).to(self.device)
 
         # Combine encoder and decoder into the model
         self.model = Model(self.encoder, self.decoder, params).to(self.device)

@@ -22,12 +22,12 @@ class QuantumPOVMDataset(Dataset):
         # print(lt)
         # print(self.measurements.sum(0)/self.shots)
         # counts = measurement_data.get_counts()
-        # # for i in range(len(self.measurements)):
-        # #     print(self.results(0)['memory'][i],
-        # #           self.results(1)['memory'][i],
-        # #           self.results(2)['memory'][i],
-        # #           bin(int(self.results(3)['memory'][i],16))[2:].zfill(self.n))
-        # #     print(self.measurements[i])
+        # for i in range(len(self.measurements)):
+        #     print(self.results(0)['memory'][i],
+        #           self.results(1)['memory'][i],
+        #           self.results(2)['memory'][i],
+        #           bin(int(self.results(3)['memory'][i],16))[2:].zfill(self.n))
+        #     print(self.measurements[i])
 
     def _process_measurements(self):
         """Processes the measurement data into a usable format."""
@@ -119,7 +119,9 @@ def load_data(params):
     if params.first_run:
         POVM_dataset = QuantumPOVMDataset(
             measurement_data=params.result,
-            params=params
+            n=params.n,
+            shots=params.shots,
+            transform=transforms.Compose([ToTensor()])
         )
         with open(filename, 'wb') as f:
             pickle.dump({'dataset': POVM_dataset, 'circuits': params.circuits, 'result': params.result}, f)
