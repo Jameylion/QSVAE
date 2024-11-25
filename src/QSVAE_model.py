@@ -1,3 +1,4 @@
+
 import torch
 import torch.nn as nn
 from tqdm import tqdm
@@ -9,6 +10,7 @@ from torch.nn import DataParallel
 from itertools import product
 from scipy.linalg import sqrtm
 from src.SNN_brainscales import *
+import snntorch.functional as SF
 
 import os
 import numpy as np
@@ -26,12 +28,7 @@ sigma_z = np.array([[1, 0], [0, -1]])
 class Model(torch.nn.Module):
     """ Complete model with encoder (SNN on CPU) and decoder(SNN on Brainscales) """
 
-    def __init__(
-            self,
-            encoder: torch.nn.Module,
-            decoder: torch.nn.Module,
-            readout_scale: float = 1.,
-            device: str = "cpu"):
+    def __init__(self, encoder, decoder, params):
         """
         Initialize the model by assigning encoder, network and decoder
         :param encoder: Module to encode input data
@@ -44,9 +41,11 @@ class Model(torch.nn.Module):
         self.encoder = encoder
         self.decoder = decoder
         self.latent_z = None
-        self.device = device
-
-        self.readout_scale = readout_scale
+        self.device = params.device
+        self.outputs = params.output_size
+        # self.readout_scale = params.readout_scale
+        self.bottleneckfc = nn.Linear(self.outputs, self.outputs)
+        self.bottlenecksm = nn.Sigmoid()
 
     def reparameterization(self, mean, var):
       std = torch.sqrt(var).to(self.device)
@@ -60,15 +59,15 @@ class Model(torch.nn.Module):
        return spk.sum(0)/spk.shape[0]
 
     def loss_function(self, x_hat, x, mean, log_var):
-     # Calculate reconstruction loss (example: MSE)
-      reconstruction_loss = nn.MSELoss()(x_hat, x)
+        # Calculate reconstruction loss (example: MSE)
+        reconstruction_loss = nn.MSELoss()(x_hat, x)
+        
+        # Calculate KL divergence
+        kl_divergence = -0.5 * torch.sum(1 + log_var - mean.pow(2) - log_var.exp())
 
-      # Calculate KL divergence
-      kl_divergence = -0.5 * torch.sum(1 + log_var - mean.pow(2) - log_var.exp())
-
-      # Combine the losses
-      total_loss = reconstruction_loss + kl_divergence
-      return total_loss
+        # Combine the losses
+        total_loss = reconstruction_loss + kl_divergence
+        return total_loss
 
     def calc_mean_var(self, spk):
 
@@ -82,11 +81,63 @@ class Model(torch.nn.Module):
       return mean, variance
     
     def reparam_poisson(self, r, spk):
-       u = torch.rand(spk.shape).to(self.device)
-       z = (u < r.unsqueeze(0)).float()
-       return z
-       
+        '''
+        Args: firing rate, spikes. size: [batch, input/outputs], [steps, batch, inputs/outputs]
+        Return: latent space z [steps, batch, inputs/outputs]
+        '''
+        # print(r.shape)
+        # print(spk.shape)
+        u = torch.rand(spk.shape).to(self.device)
+        z = (u < r.unsqueeze(0)).float()
+        # print(z.shape)
+        return z
+    
+    def rbf_kernel(self, x, y, sigma=1.0):
+        # Compute the squared Euclidean distance between x and y
+        x_norm = (x ** 2).sum(1).reshape(-1, 1)
+        y_norm = (y ** 2).sum(1).reshape(1, -1)
+        distance = x_norm + y_norm - 2 * torch.mm(x, y.T)
+    
+        # Compute the RBF kernel
+        return torch.exp(-distance / (2 * sigma ** 2))
+    
+    def mmd_rbf_loss(self, x_samples, y_samples, sigma=1.0):
+        # Compute the RBF kernels
+        k_xx = self.rbf_kernel(x_samples, x_samples, sigma)
+        k_yy = self.rbf_kernel(y_samples, y_samples, sigma)
+        k_xy = self.rbf_kernel(x_samples, y_samples, sigma)
 
+        # Calculate the MMD loss
+        mmd = k_xx.mean() + k_yy.mean() - 2 * k_xy.mean()
+        return mmd
+
+    def MMDKLLoss(self, r_p, r_q, x_hat, x, size):
+        # print("rates: ",r_p, r_q)
+        # print("x, xhat", x, x_hat)
+        # x_hat = (x_hat/x_hat.sum((0,1))) #nn.Softmax()
+        print("x, xhat sm ", x, x_hat)
+        print("x, xhat", x.shape, x_hat.shape)
+        
+        # x_hat = torch.round(torch.nn.functional.normalize(x_hat, p=2.0, dim=1, eps=1e-12, out=None))
+        x_hat = torch.round(x_hat/100)
+        print("x, xhat sm ", x, x_hat)
+
+        # reconstruction_loss = nn.BCELoss()(x_hat, x)
+        # mmd_loss = torch.mean((self.reparam_poisson(r_q, size)-self.reparam_poisson(r_p, size))**2)
+        
+        # Calculate the reconstruction loss (e.g., using BCE)
+        reconstruction_loss = nn.BCELoss()(x_hat, x)
+
+        # Compute the MMD loss between two sets of samples (e.g., r_p and r_q)
+        mmd_loss = self.mmd_rbf_loss(r_p, r_q, sigma=1.0)
+
+        # Combine the losses with a balancing coefficient lambda_mmd
+        lambda_mmd = 1.0  # Adjust as needed
+        total_loss = reconstruction_loss + lambda_mmd * mmd_loss
+
+        print(f" Reconstruction loss is {reconstruction_loss} and the mmd_loss = {mmd_loss}, total loss = {total_loss}")
+        return total_loss
+       
     def forward(self, x):
         spk, mem = self.encoder(x)
         mean, log_var = self.calc_mean_var(spk)
@@ -95,147 +146,147 @@ class Model(torch.nn.Module):
         # torch.set_printoptions(profile="full")
         # print(self.firing_rate(spk)) # prints the whole tensor
         # torch.set_printoptions(profile="default") # reset
+        print("encoder out spk", spk.sum((0,1)))
         
-        r = self.firing_rate(spk)
-        print("firing rate = ", r)
+        r_p = self.firing_rate(spk)
+        # print("firing rate = ", r_p)
         # print("z = ", self.reparam_poisson(r, spk))
         # z = self.reparameterization(mean, torch.exp(0.5 * log_var))
-        z = self.reparam_poisson(r, spk)
+        z = self.reparam_poisson(r_p, spk)
 
         # print(z.shape)
 
         spk, mem = self.decoder(z)
 
-        del z, r
+        del z
         torch.cuda.empty_cache()
         # print(type(x_hat))
 
-        return spk, mem, mean, log_var
+        return spk, mem, mean, log_var, r_p
 
+    
 # @title Class Encoder
 class Encoder(nn.Module):
-  def __init__(self, input_size, hidden_size, output_size, beta, num_steps):
-    super().__init__()
+    def __init__(self, params):
+        super().__init__()
+        self.fc1 = nn.Linear(params.input_size, params.hidden_size)
+        self.lif1 = snn.Leaky(beta=params.beta)
+        self.fc2 = nn.Linear(params.hidden_size, params.output_size)
+        self.lif2 = snn.Leaky(beta=params.beta)
+        self.num_steps = params.num_steps
+        self.outputs = params.output_size
+        
+    def forward(self, x):
+        mem1 = self.lif1.init_leaky()
+        mem2 = self.lif2.init_leaky()
 
-    self.fc1 = nn.Linear(input_size, hidden_size)
-    self.lif1 = snn.Leaky(beta=beta)
-    self.fc2 = nn.Linear(hidden_size, output_size)
-    self.lif2 = snn.Leaky(beta=beta)
-    self.num_steps = num_steps
+        spk2_rec = []
+        mem2_rec = []
 
-  def forward(self, x):
-    mem1 = self.lif1.init_leaky()
-    mem2 = self.lif2.init_leaky()
+        for step in range(self.num_steps):
+            cur1 = self.fc1(x)
+            spk1, mem1 = self.lif1(cur1, mem1)
 
-    spk2_rec = []
-    mem2_rec = []
+            cur2 = self.fc2(spk1)
+            spk2, mem2 = self.lif2(cur2, mem2)
 
-    for step in range(self.num_steps):
-        cur1 = self.fc1(x)
-        spk1, mem1 = self.lif1(cur1, mem1)
+            spk2_rec.append(spk2)
+            mem2_rec.append(mem2)
 
-        cur2 = self.fc2(spk1)
-        spk2, mem2 = self.lif2(cur2, mem2)
+            # del spk1, spk2, cur1, cur2
+        del mem1, mem2, spk1, spk2, cur1, cur2
 
-        spk2_rec.append(spk2)
-        mem2_rec.append(mem2)
-
-        # del spk1, spk2, cur1, cur2
-    del mem1, mem2, spk1, spk2, cur1, cur2
-
-    return torch.stack(spk2_rec, dim=0), torch.stack(mem2_rec, dim=0)
+        return torch.stack(spk2_rec, dim=0), torch.stack(mem2_rec, dim=0)
 
 class Decoder(nn.Module):
-  def __init__(self, input_size, hidden_size, output_size, beta, num_steps):
-    super().__init__()
-
-    self.fc1 = nn.Linear(input_size, hidden_size)
-    self.lif1 = snn.Leaky(beta=beta)
-    self.fc2 = nn.Linear(hidden_size, output_size)
-    self.lif2 = snn.Leaky(beta=beta)
-    self.num_steps = num_steps
-
-  def forward(self, x):
-    mem1 = self.lif1.init_leaky()
-    mem2 = self.lif2.init_leaky()
-
-    spk2_rec = []
-    mem2_rec = []
-
-    for step in range(self.num_steps):
-        cur1 = self.fc1(x)
-        spk1, mem1 = self.lif1(cur1, mem1)
-
-        cur2 = self.fc2(spk1)
-        spk2, mem2 = self.lif2(cur2, mem2)
-
-        spk2_rec.append(spk2)
-        mem2_rec.append(mem2)
-        
-        del spk1, spk2, cur1, cur2
-    del mem1, mem2
+    def __init__(self, params):
+        super().__init__()
+        self.fc1 = nn.Linear(params.output_size, params.hidden_size)
+        self.lif1 = snn.Leaky(beta=params.beta)
+        self.fc2 = nn.Linear(params.hidden_size, params.input_size)
+        self.lif2 = snn.Leaky(beta=params.beta)
+        self.num_steps = params.num_steps
 
 
-    return torch.stack(spk2_rec, dim=0), torch.stack(mem2_rec, dim=0)
+    def forward(self, x):
+        mem1 = self.lif1.init_leaky()
+        mem2 = self.lif2.init_leaky()
+
+        spk2_rec = []
+        mem2_rec = []
+
+        for step in range(self.num_steps):
+            cur1 = self.fc1(x)
+            spk1, mem1 = self.lif1(cur1, mem1)
+
+            cur2 = self.fc2(spk1)
+            spk2, mem2 = self.lif2(cur2, mem2)
+
+            spk2_rec.append(spk2)
+            mem2_rec.append(mem2)
+
+            del spk1, spk2, cur1, cur2
+        del mem1, mem2
 
 
-class SQVAE(Model):
-    def __init__(self, n, batch_size, beta, num_steps, learning_rate, device, shots, samples,
-                  first_run=True, dataset=None,s_vectors=None):
-        super(SQVAE, self).__init__(encoder=None, decoder=None)
-        # Model parameters
-        self.n = n
-        self.batch_size = batch_size
-        self.beta = beta
-        self.num_steps = num_steps
-        self.learning_rate = learning_rate
-        self.device = device
-        self.first_run = first_run
-        self.dataset = dataset
-        self.s_vectors = s_vectors
-        self.samples = samples
+        return torch.stack(spk2_rec, dim=0), torch.stack(mem2_rec, dim=0)
 
-        # Define the input, hidden, and output sizes
-        self.inputs = 4 * n
-        self.hidden = 20 * n
-        self.outputs = 2 * 2**n
-        self.shots = shots
+
+class SQVAE():
+    def __init__(self, params, POVM_dataset):
+        self.n = params.n
+        self.batch_size = (params.batch_train, params.batch_test, params.batch_val)
+        self.beta = params.beta
+        self.num_steps = params.num_steps
+        self.learning_rate = params.learning_rate
+        self.device = params.device
+        self.first_run = params.first_run
+        self.dataset = POVM_dataset
+        self.s_vectors = params.s_vectors
+        self.samples = params.batch_val
+        self.inputs = params.input_size
+        self.hidden = params.hidden_size
+        self.outputs = params.output_size
+        self.shots = params.shots
+        # Define bottleneck
+
         
         self.MOCK          = False
         self.DT            = 2.0e-06  # s
 
         # Initialize encoder and decoder as part of the model
-        self.encoder = Encoder(self.inputs, self.hidden, self.outputs, self.beta, self.num_steps).to(self.device)
+        self.encoder = Encoder(params).to(self.device)
         self.decoder = SNN(
-                                n_in=2 * 2**n,
-                                n_hidden= 32 *n,
-                                n_out=4 * n,
-                                mock=self.MOCK,
-                                calib_path="spiking2_cocolist.pbin",
-                                dt=self.DT,
-                                tau_mem=8.0e-06, #6.0e-6
-                                tau_syn=8.0e-06,
-                                alpha=70.,
-                                trace_shift_hidden=int(.0e-06/self.DT),
-                                trace_shift_out=int(.0e-06/self.DT),
-                                weight_init_hidden=(0.1, 0.4),
-                                weight_init_output=(0.2, 0.3),
-                                weight_scale=66.39,
-                                trace_scale=0.0147,
-                                input_repetitions=1 if self.MOCK else 1,
-                                device=device)
+            n_in=params.output_size,
+            n_hidden=params.hidden_size,
+            n_out=params.input_size,
+            mock=params.mock,
+            calib_path="spiking2_cocolist.pbin",
+            dt=self.DT,
+            tau_mem=8.0e-06, #6.0e-6
+            tau_syn=8.0e-06,
+            alpha=70.,
+            trace_shift_hidden=int(.0e-06/self.DT),
+            trace_shift_out=int(.0e-06/self.DT),
+            weight_init_hidden=(0.1, 0.4),
+            weight_init_output=(0.2, 0.3),
+            weight_scale=66.39,
+            trace_scale=0.0147,
+            input_repetitions=1 if self.MOCK else 1,
+            device=params.device
+        )
 
         # Combine encoder and decoder into the model
-        self.model = Model(self.encoder, self.decoder, device=device).to(self.device)
+        self.model = Model(self.encoder, self.decoder, params).to(self.device)
 
         # Optimizer
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate)
 
         # If this is the first run, save the initial model state
-        if first_run:
-            torch.save(self.model.state_dict(), f"data/models/model_{n}qubit_{int(shots)}shots.pt")
+        if params.first_run:
+            torch.save(self.model.state_dict(), f"data/models/model_{params.n}qubit_{int(params.shots)}shots.pt")
         else:
-            self.model.load_state_dict(torch.load( f"data/models/model_{n}qubit_{int(shots)}shots.pt"))
+            self.model.load_state_dict(torch.load( f"data/models/model_{params.n}qubit_{int(params.shots)}shots.pt"))
 
         # # Check for multiple GPUs and use DataParallel
         # if torch.cuda.device_count() > 1:
@@ -279,6 +330,8 @@ class SQVAE(Model):
 
         # Initialize list for storing loss values
         train_loss = []
+        
+        size = torch.Tensor(self.num_steps, self.batch_size[2], self.outputs)
 
         # Training loop
         for epoch in range(num_epochs):
@@ -290,10 +343,15 @@ class SQVAE(Model):
                 optimizer.zero_grad()
 
                 # Forward pass
-                spk, mem, mean, log_var = self.model(sample_batched)
+                spk, mem, mean, log_var, r_p = self.model(sample_batched)
+                
+                z_n = torch.randn(self.batch_size[2], self.outputs, dtype = torch.float32, device = self.device)
+            # print(samples_z.shape)r
+                r_q = self.model.bottlenecksm(self.model.bottleneckfc(z_n))
 
                 # Calculate loss
-                loss = self.model.loss_function(spk.sum(0), sample_batched, mean, log_var)
+                # loss = self.model.loss_function(spk.sum(0), sample_batched, mean, log_var)
+                loss = self.model.MMDKLLoss(r_p, r_q, spk.sum(0), sample_batched, size)
                 loss.backward()
                 optimizer.step()
 
@@ -418,6 +476,7 @@ class SQVAE(Model):
 
         self.model.eval()  # Set the model to evaluation mode
         spikes = []
+       
 
         # data = iter(dataloader)
         # for batch_idx, sample_batched in enumerate(tqdm(data)):
@@ -429,14 +488,13 @@ class SQVAE(Model):
             # if self.device == "cpu":
             #   samples_z = torch.randn(self.batch_size[2], self.outputs).to(self.device) 
             # else:
-            samples_z = torch.randn(self.batch_size[2], self.outputs, dtype = torch.float32, device = self.device)
-            # print(samples_z.shape)
-            samples_poisson = self.model.reparam_poisson(samples_z, torch.Tensor(self.num_steps, self.batch_size[2], self.outputs))
+            samples_n = torch.randn(self.batch_size[2], self.outputs, dtype = torch.float32, device = self.device)
+            # print(samples_z.shape)r
+            r_q = self.model.bottlenecksm(self.model.bottleneckfc(samples_n))
+            
+            samples_poisson = self.model.reparam_poisson(r_q, torch.Tensor(self.num_steps, self.batch_size[2], self.outputs))
             # print(samples_poisson, samples_poisson.shape)
             with torch.no_grad():  # Disable gradient calculation for testing
-                if isinstance(samples_z, tuple):\
-                    samples_z = samples_z[0]  # Ensure it is a Tensor
-
                 spk, mem = self.model.decoder(samples_poisson) # spk.shape == [num_steps, batch, output neurons decoder]
                 # print("spk: ", spk.sum(dim=(0, 1)).shape)
                 # l = spk.shape[1]
@@ -447,7 +505,7 @@ class SQVAE(Model):
                 spikes.append(spk.sum(dim=(0, 1)))
                 # print(spk, spk.shape)
                 # Free up memory
-                del spk, mem, samples_z
+                del spk, mem, samples_n, samples_poisson, r_q
                 # torch.cuda.empty_cache()
 
         # Calculate and return the average test loss over the dataset

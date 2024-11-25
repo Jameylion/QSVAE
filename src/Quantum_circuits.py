@@ -65,10 +65,10 @@ class QuantumExperiment:
         circuits = []
 
         if backend_name == "Starmon-5":
-          r = range(1,n+1)
-          n = 5
+            r = range(1,n+1)
+            n = 5
         else:
-          r = range(n)
+            r = range(n)
 
         qc_0 = QuantumCircuit(n)
         qc_1 = QuantumCircuit(n)
@@ -76,16 +76,16 @@ class QuantumExperiment:
         qc_3 = QuantumCircuit(n)
 
         for i in r:
-          # POVM state |psi_1> = 1/sqrt(3) (|0> + sqrt(2)|1>)
-          qc_1.ry(2 * np.arccos(1 / np.sqrt(3)), i)  # Ry rotation to align state
+            # POVM state |psi_1> = 1/sqrt(3) (|0> + sqrt(2)|1>)
+            qc_1.ry(2 * np.arccos(1 / np.sqrt(3)), i)  # Ry rotation to align state
 
-          # POVM state |psi_2> = 1/sqrt(3) (|0> + exp(i2pi/3) sqrt(2)|1>)
-          qc_2.ry(2 * np.arccos(1 / np.sqrt(3)), i)
-          qc_2.rz(2 * np.pi / 3, i)  # Add phase rotation
+            # POVM state |psi_2> = 1/sqrt(3) (|0> + exp(i2pi/3) sqrt(2)|1>)
+            qc_2.ry(2 * np.arccos(1 / np.sqrt(3)), i)
+            qc_2.rz(2 * np.pi / 3, i)  # Add phase rotation
 
-          # POVM state |psi_3> = 1/sqrt(3) (|0> + exp(-i2pi/3) sqrt(2)|1>)
-          qc_3.ry(2 * np.arccos(1 / np.sqrt(3)), i)
-          qc_3.rz(-2 * np.pi / 3, i)  # Add phase rotation
+            # POVM state |psi_3> = 1/sqrt(3) (|0> + exp(-i2pi/3) sqrt(2)|1>)
+            qc_3.ry(2 * np.arccos(1 / np.sqrt(3)), i)
+            qc_3.rz(-2 * np.pi / 3, i)  # Add phase rotation
 
         circuits.append(qc_0)
         circuits.append(qc_1)
@@ -116,21 +116,21 @@ class QuantumExperiment:
           print(counts[i])
 
 def select_backend(backend_type):
-  if backend_type == "Starmon-5":
-    from quantuminspire.credentials import get_authentication
-    from quantuminspire.qiskit import QI
-    from coreapi.auth import TokenAuthentication
-    token = TokenAuthentication('6af0e322481376e6785741e7af617420b671b522', scheme="token")
-    QI.set_authentication(token)
-    # auth = get_token_authentication()
+    if backend_type == "Starmon-5":
+        from quantuminspire.credentials import get_authentication
+        from quantuminspire.qiskit import QI
+        from coreapi.auth import TokenAuthentication
+        token = TokenAuthentication('6af0e322481376e6785741e7af617420b671b522', scheme="token")
+        QI.set_authentication(token)
+        # auth = get_token_authentication()
 
-    print(QI.backends())
-    backend = QI.get_backend('Starmon-5')
+        print(QI.backends())
+        backend = QI.get_backend('Starmon-5')
 
-  elif backend_type == "AerSimulator":
-    # Use AerSimulator
-    from qiskit_aer import AerSimulator
-    backend = AerSimulator()
+    elif backend_type == "AerSimulator":
+        # Use AerSimulator
+        from qiskit_aer import AerSimulator
+        backend = AerSimulator()
 
     return backend
 

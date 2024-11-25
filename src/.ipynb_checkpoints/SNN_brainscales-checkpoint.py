@@ -160,14 +160,14 @@ class SNN(torch.nn.Module):
         # print(y_o.v_cadc)
         # print(type(c_o))
         # print(c_h)
-        print("spikes input", spikes.sum((0,1)))
-        print("spikes hid shape", self.s_h.spikes.shape) 
-        print("hidden spike count", self.s_h.spikes.sum((0,1)))
+        # print("spikes input", spikes.sum((0,1)))
+        # print("spikes hid shape", self.s_h.spikes.shape) 
+        # print("hidden spike count", self.s_h.spikes.sum((0,1)))
         print("output spike count", y_o.spikes.sum((0,1)))
-        plot_cur_mem_spk(self.s_h.v_cadc, self.s_h.v_cadc, self.s_h.spikes, thr_line=True, vline=False, title=False,
-                     ylim_max1=1.25, ylim_max2=1.25, neuron_index=torch.argmax(self.s_h.spikes.sum(0)))
+#         plot_cur_mem_spk(self.s_h.current, self.s_h.v_cadc, self.s_h.spikes, thr_line=True, vline=False, title=False,
+#                      ylim_max1=1.25, ylim_max2=1.25, neuron_index=torch.argmax(self.s_h.spikes.sum(0)))
 
-        plot_cur_mem_spk(y_o.v_cadc, y_o.v_cadc, y_o.spikes, thr_line=True, vline=False, title=False, ylim_max1=1.25, ylim_max2=1.25, neuron_index=torch.argmax(y_o.spikes.sum(0)))
+#         plot_cur_mem_spk(y_o.current, y_o.v_cadc, y_o.spikes, thr_line=True, vline=False, title=False, ylim_max1=1.25, ylim_max2=1.25, neuron_index=torch.argmax(y_o.spikes.sum(0)))
 
 
         return y_o.spikes, y_o.v_cadc
@@ -187,8 +187,8 @@ def plot_cur_mem_spk(cur, mem, spk, thr_line=False, vline=False, title=False,
     cur = cur[:, j, i].detach()  
     # Plot input current
     ax[0].plot(cur, c="tab:orange")
-    ax[0].set_ylim([0, ylim_max1])
-    ax[0].set_xlim([0, 200])
+    ax[0].set_ylim([0, cur.max()])
+    ax[0].set_xlim([0, spk.shape[0]])
     ax[0].set_ylabel("Input Current ($I_{in}$)")
     if title:
         ax[0].set_title(title)

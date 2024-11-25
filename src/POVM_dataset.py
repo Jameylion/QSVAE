@@ -89,22 +89,54 @@ class ToTensor(object):
 
         return {'POVM': torch.from_numpy(povm)}
     
-def load_data(result, circuits, first_run, backend, n, shots, split, batch_size, shuffle, num_workers):
+# def load_data(result, circuits, first_run, backend, n, shots, split, batch_size, shuffle, num_workers):
+#     """Loads the quantum dataset, either by running an experiment or loading saved data."""
+#     filename = os.path.join("data", "datasets", f"POVM_data_{n}Qubit_{int(shots)}shots.pkl")
+#     if first_run:
+#         POVM_dataset = QuantumPOVMDataset(result, n, shots, transform=transforms.Compose([ToTensor()]))
+#         with open(filename, 'wb') as f:
+#             pickle.dump({'dataset': POVM_dataset, 'circuits': circuits, 'result': result}, f)
+#             print("Dataset and circuit saved.")
+#     else:
+#         with open(filename, 'rb') as f:
+#             data = pickle.load(f)
+#             POVM_dataset = data['dataset']
+#             print("Dataset loaded.")
+
+#     train_loader, test_loader, val_loader = POVM_dataset.split_dataset(split,
+#                                                                        batch_size,
+#                                                                        shuffle,
+#                                                                        num_workers)
+#     return train_loader, test_loader, val_loader, POVM_dataset
+
+def load_data(params):
     """Loads the quantum dataset, either by running an experiment or loading saved data."""
-    filename = os.path.join("data", "datasets", f"POVM_data_{n}Qubit_{int(shots)}shots.pkl")
-    if first_run:
-        POVM_dataset = QuantumPOVMDataset(result, n, shots, transform=transforms.Compose([ToTensor()]))
+
+    # Define the dataset filename based on parameters
+    filename = os.path.join("data", "datasets", f"POVM_data_{params.n}Qubit_{int(params.shots)}shots.pkl")
+    
+    # If first_run, create the dataset and save it
+    if params.first_run:
+        POVM_dataset = QuantumPOVMDataset(
+            measurement_data=params.result,
+            params=params
+        )
         with open(filename, 'wb') as f:
-            pickle.dump({'dataset': POVM_dataset, 'circuits': circuits, 'result': result}, f)
+            pickle.dump({'dataset': POVM_dataset, 'circuits': params.circuits, 'result': params.result}, f)
             print("Dataset and circuit saved.")
     else:
+        # Load existing dataset
         with open(filename, 'rb') as f:
             data = pickle.load(f)
             POVM_dataset = data['dataset']
             print("Dataset loaded.")
 
-    train_loader, test_loader, val_loader = POVM_dataset.split_dataset(split,
-                                                                       batch_size,
-                                                                       shuffle,
-                                                                       num_workers)
+    # Split dataset into train, test, and validation sets
+    train_loader, test_loader, val_loader = POVM_dataset.split_dataset(
+        params.split,
+        (params.batch_train, params.batch_test, params.batch_val),
+        params.shuffle,
+        params.num_workers
+    )
+
     return train_loader, test_loader, val_loader, POVM_dataset
