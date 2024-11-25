@@ -163,7 +163,7 @@ class SNN(torch.nn.Module):
         # print("spikes input", spikes.sum((0,1)))
         # print("spikes hid shape", self.s_h.spikes.shape) 
         # print("hidden spike count", self.s_h.spikes.sum((0,1)))
-        print("output spike count", y_o.spikes.sum((0,1)))
+        # print("output spike count", y_o.spikes.sum((0,1)))
 #         plot_cur_mem_spk(self.s_h.current, self.s_h.v_cadc, self.s_h.spikes, thr_line=True, vline=False, title=False,
 #                      ylim_max1=1.25, ylim_max2=1.25, neuron_index=torch.argmax(self.s_h.spikes.sum(0)))
 

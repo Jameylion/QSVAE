@@ -46,6 +46,7 @@ class Model(torch.nn.Module):
         # self.readout_scale = params.readout_scale
         self.bottleneckfc = nn.Linear(self.outputs, self.outputs)
         self.bottlenecksm = nn.Sigmoid()
+        self.params = params
 
     def reparameterization(self, mean, var):
       std = torch.sqrt(var).to(self.device)
@@ -115,18 +116,21 @@ class Model(torch.nn.Module):
         # print("rates: ",r_p, r_q)
         # print("x, xhat", x, x_hat)
         # x_hat = (x_hat/x_hat.sum((0,1))) #nn.Softmax()
-        print("x, xhat sm ", x, x_hat)
-        print("x, xhat", x.shape, x_hat.shape)
+        # print("x, xhat sm ", x, x_hat)
+        # print("x, xhat", x.shape, x_hat.shape)
         
         # x_hat = torch.round(torch.nn.functional.normalize(x_hat, p=2.0, dim=1, eps=1e-12, out=None))
-        x_hat = torch.round(x_hat/100)
+        # x_hat = torch.round(x_hat/self.params.num_steps)
+        x_hat = x_hat/self.params.num_steps
+        # x_hat = torch.sigmoid(x_hat)
         print("x, xhat sm ", x, x_hat)
 
-        # reconstruction_loss = nn.BCELoss()(x_hat, x)
+        
         # mmd_loss = torch.mean((self.reparam_poisson(r_q, size)-self.reparam_poisson(r_p, size))**2)
         
-        # Calculate the reconstruction loss (e.g., using BCE)
-        reconstruction_loss = nn.BCELoss()(x_hat, x)
+        # Calculate the reconstruction loss
+        # reconstruction_loss = nn.BCELoss()(x_hat, x)
+        reconstruction_loss = nn.MSELoss()(x_hat, x)
 
         # Compute the MMD loss between two sets of samples (e.g., r_p and r_q)
         mmd_loss = self.mmd_rbf_loss(r_p, r_q, sigma=1.0)
@@ -146,7 +150,7 @@ class Model(torch.nn.Module):
         # torch.set_printoptions(profile="full")
         # print(self.firing_rate(spk)) # prints the whole tensor
         # torch.set_printoptions(profile="default") # reset
-        print("encoder out spk", spk.sum((0,1)))
+        # print("encoder out spk", spk.sum((0,1)))
         
         r_p = self.firing_rate(spk)
         # print("firing rate = ", r_p)
@@ -248,6 +252,7 @@ class SQVAE():
         self.hidden = params.hidden_size
         self.outputs = params.output_size
         self.shots = params.shots
+        self.num_epochs = params.num_epochs
         # Define bottleneck
 
         
@@ -256,25 +261,28 @@ class SQVAE():
 
         # Initialize encoder and decoder as part of the model
         self.encoder = Encoder(params).to(self.device)
-        self.decoder = SNN(
-            n_in=params.output_size,
-            n_hidden=params.hidden_size,
-            n_out=params.input_size,
-            mock=params.mock,
-            calib_path="spiking2_cocolist.pbin",
-            dt=self.DT,
-            tau_mem=8.0e-06, #6.0e-6
-            tau_syn=8.0e-06,
-            alpha=70.,
-            trace_shift_hidden=int(.0e-06/self.DT),
-            trace_shift_out=int(.0e-06/self.DT),
-            weight_init_hidden=(0.1, 0.4),
-            weight_init_output=(0.2, 0.3),
-            weight_scale=66.39,
-            trace_scale=0.0147,
-            input_repetitions=1 if self.MOCK else 1,
-            device=params.device
-        )
+        if not params.first_run:
+            self.decoder = SNN(
+                n_in=params.output_size,
+                n_hidden=params.hidden_size,
+                n_out=params.input_size,
+                mock=params.mock,
+                calib_path="spiking2_cocolist.pbin",
+                dt=self.DT,
+                tau_mem=8.0e-06, #6.0e-6
+                tau_syn=8.0e-06,
+                alpha=70.,
+                trace_shift_hidden=int(.0e-06/self.DT),
+                trace_shift_out=int(.0e-06/self.DT),
+                weight_init_hidden=(0.1, 0.4),
+                weight_init_output=(0.2, 0.3),
+                weight_scale=66.39,
+                trace_scale=0.0147,
+                input_repetitions=1 if self.MOCK else 1,
+                device=params.device
+            )
+        else:
+            self.decoder = Decoder(params).to(self.device)
 
         # Combine encoder and decoder into the model
         self.model = Model(self.encoder, self.decoder, params).to(self.device)
@@ -283,10 +291,10 @@ class SQVAE():
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate)
 
         # If this is the first run, save the initial model state
-        if params.first_run:
+        if not params.load_model:
             torch.save(self.model.state_dict(), f"data/models/model_{params.n}qubit_{int(params.shots)}shots.pt")
         else:
-            self.model.load_state_dict(torch.load( f"data/models/model_{params.n}qubit_{int(params.shots)}shots.pt"))
+            self.model.load_state_dict(torch.load( f"data/models/model_{params.n}qubit_{int(params.shots)}shots.pt", map_location=torch.device(params.device)))
 
         # # Check for multiple GPUs and use DataParallel
         # if torch.cuda.device_count() > 1:
@@ -294,22 +302,22 @@ class SQVAE():
         #     self.model = DataParallel(self.model)
 
 
-    def run(self, train=True, test=True, val=True, train_loader=None, test_loader=None, val_loader=None, num_epochs=11):
+    def run(self, params):
         """Run the model with options for training, testing, and validation."""
         fidelity_score = 0
-        if train:
+        if params.train:
             # Initialize TensorBoard writer for training
             writer = SummaryWriter(log_dir='runs/Paperreproduction')
-            self.train_model(train_loader,self.optimizer, self.device, num_epochs, writer)
+            self.train_model(self.dataset.train_loader,self.optimizer, self.device, writer)
             torch.save(self.model.state_dict(), f"data/models/model_{self.n}qubit_{int(self.shots)}shots.pt")
 
-        if test:
+        if params.test:
             # Initialize TensorBoard writer for testing
             writer = SummaryWriter(log_dir='runs/test_experiment')
-            test_loss = self.test_model(test_loader, self.device, writer)
+            test_loss = self.test_model(self.dataset.test_loader, self.device, writer)
             print("Average test loss: ", test_loss)
 
-        if val:
+        if params.val:
             prob_rec = self.val_model()
             prob_true = self.dataset.probability_true
             print(prob_rec, prob_true)
@@ -320,7 +328,7 @@ class SQVAE():
 
         return fidelity_score
 
-    def train_model(self, dataloader, optimizer, device, num_epochs, writer):
+    def train_model(self, dataloader, optimizer, device, writer):
         self.model.train()
 
         # Early stopping parameters
@@ -334,7 +342,7 @@ class SQVAE():
         size = torch.Tensor(self.num_steps, self.batch_size[2], self.outputs)
 
         # Training loop
-        for epoch in range(num_epochs):
+        for epoch in range(self.num_epochs):
             epoch_loss = []
             data = iter(dataloader)
 
@@ -376,7 +384,7 @@ class SQVAE():
 
             # Calculate and store the average loss for the epoch
             avg_epoch_loss = sum(epoch_loss) / len(dataloader)
-            print(f"Epoch {epoch+1}/{num_epochs}, Loss: {avg_epoch_loss:.4f}")
+            print(f"Epoch {epoch+1}/{self.num_epochs}, Loss: {avg_epoch_loss:.4f}")
             train_loss.append(avg_epoch_loss)
 
             # Log average epoch loss to TensorBoard

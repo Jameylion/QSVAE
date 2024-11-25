@@ -17,6 +17,9 @@ class QuantumPOVMDataset(Dataset):
         self.shots = shots
         self.measurements = self._process_measurements()
         self.probability_true = self.measurements.sum(0)/self.shots
+        self.train_loader = None
+        self.test_loader = None
+        self.val_loader = None
         # print(self.measurements  ) 
         # lt = self.measurements.shape[0]
         # print(lt)
@@ -75,11 +78,9 @@ class QuantumPOVMDataset(Dataset):
         test_set = Subset(self, test_indices)
         val_set = Subset(self, val_indices)
 
-        train_loader = DataLoader(train_set, batch_size=batch_size[0], shuffle=shuffle, num_workers=num_workers)
-        test_loader = DataLoader(test_set, batch_size=batch_size[1], shuffle=shuffle, num_workers=num_workers)
-        val_loader = DataLoader(val_set, batch_size=batch_size[2], shuffle=shuffle, num_workers=num_workers)
-
-        return train_loader, test_loader, val_loader
+        self.train_loader = DataLoader(train_set, batch_size=batch_size[0], shuffle=shuffle, num_workers=num_workers)
+        self.test_loader = DataLoader(test_set, batch_size=batch_size[1], shuffle=shuffle, num_workers=num_workers)
+        self.val_loader = DataLoader(val_set, batch_size=batch_size[2], shuffle=shuffle, num_workers=num_workers)
 
 class ToTensor(object):
     """Convert ndarrays in sample to Tensors."""
@@ -134,11 +135,11 @@ def load_data(params):
             print("Dataset loaded.")
 
     # Split dataset into train, test, and validation sets
-    train_loader, test_loader, val_loader = POVM_dataset.split_dataset(
+    POVM_dataset.split_dataset(
         params.split,
         (params.batch_train, params.batch_test, params.batch_val),
         params.shuffle,
         params.num_workers
     )
 
-    return train_loader, test_loader, val_loader, POVM_dataset
+    return POVM_dataset
