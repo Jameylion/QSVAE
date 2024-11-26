@@ -11,6 +11,7 @@ from itertools import product
 from scipy.linalg import sqrtm
 from src.SNN_brainscales import *
 import snntorch.functional as SF
+import qiskit
 
 import os
 import numpy as np
@@ -123,7 +124,7 @@ class Model(torch.nn.Module):
         # x_hat = torch.round(x_hat/self.params.num_steps)
         x_hat = x_hat/self.params.num_steps
         # x_hat = torch.sigmoid(x_hat)
-        print("x, xhat sm ", x, x_hat)
+        # print("x, xhat sm ", x, x_hat)
 
         
         # mmd_loss = torch.mean((self.reparam_poisson(r_q, size)-self.reparam_poisson(r_p, size))**2)
@@ -135,12 +136,7 @@ class Model(torch.nn.Module):
         # Compute the MMD loss between two sets of samples (e.g., r_p and r_q)
         mmd_loss = self.mmd_rbf_loss(r_p, r_q, sigma=1.0)
 
-        # Combine the losses with a balancing coefficient lambda_mmd
-        lambda_mmd = 1.0  # Adjust as needed
-        total_loss = reconstruction_loss + lambda_mmd * mmd_loss
-
-        print(f" Reconstruction loss is {reconstruction_loss} and the mmd_loss = {mmd_loss}, total loss = {total_loss}")
-        return total_loss
+        return reconstruction_loss, mmd_loss
        
     def forward(self, x):
         spk, mem = self.encoder(x)
@@ -157,7 +153,8 @@ class Model(torch.nn.Module):
         # print("z = ", self.reparam_poisson(r, spk))
         # z = self.reparameterization(mean, torch.exp(0.5 * log_var))
         z = self.reparam_poisson(r_p, spk)
-
+        tot_dim = spk.shape[0] * spk.shape[1] * spk.shape[2]
+        print(f"Spike count encoder = {spk.sum((0,1,2))} = {spk.sum((0,1,2))/tot_dim *100}% = , spike count latent z = {z.sum((0,1,2))} = {z.sum((0,1,2))/tot_dim *100}% ") 
         # print(z.shape)
 
         spk, mem = self.decoder(z)
@@ -320,10 +317,10 @@ class SQVAE():
         if params.val:
             prob_rec = self.val_model()
             prob_true = self.dataset.probability_true
-            print(prob_rec, prob_true)
+            print(f"prob rec = {prob_rec}, prob_true = {prob_true}")
             rho_rec, rho_true = self.reconstruct_matrix_from_prob(prob_rec, prob_true)
-            fidelity_score = fidelity(rho_rec, rho_true)
-            # fidelity_score = fid(torch.from_numpy(prob_true), prob_rec)
+            # fidelity_score = fidelity(rho_rec, rho_true)
+            fidelity_score = fid(torch.from_numpy(prob_true), prob_rec)
             print(f"The fidelity for {self.n} qubits is {fidelity_score} with {self.samples} samples.")
 
         return fidelity_score
@@ -359,7 +356,12 @@ class SQVAE():
 
                 # Calculate loss
                 # loss = self.model.loss_function(spk.sum(0), sample_batched, mean, log_var)
-                loss = self.model.MMDKLLoss(r_p, r_q, spk.sum(0), sample_batched, size)
+                reconstruction_loss, mmd_loss = self.model.MMDKLLoss(r_p, r_q, spk.sum(0), sample_batched, size)
+                # Combine the losses with a balancing coefficient lambda_mmd
+                lambda_mmd = 1.0 
+                loss = reconstruction_loss + lambda_mmd * mmd_loss
+
+                print(f" Reconstruction loss is {reconstruction_loss} and the mmd_loss = {mmd_loss}, total loss = {loss}")
                 loss.backward()
                 optimizer.step()
 
@@ -367,6 +369,8 @@ class SQVAE():
                 epoch_loss.append(loss.item())
 
                 # Log loss to TensorBoard after each batch
+                writer.add_scalar('reconstruction_loss/train', reconstruction_loss.item(), epoch * len(dataloader) + batch_idx)
+                writer.add_scalar('mmd_loss/train', mmd_loss.item(), epoch * len(dataloader) + batch_idx)
                 writer.add_scalar('Loss/train', loss.item(), epoch * len(dataloader) + batch_idx)
 
                 # Free up memory
@@ -483,7 +487,7 @@ class SQVAE():
         torch.cuda.empty_cache()
 
         self.model.eval()  # Set the model to evaluation mode
-        spikes = []
+        spikes = torch.Tensor()
        
 
         # data = iter(dataloader)
@@ -510,62 +514,67 @@ class SQVAE():
                 # prob = spk.sum(dim=(0, 1)) 
                 # print(prob)
                 # Append the prob for the current batch
-                spikes.append(spk.sum(dim=(0, 1)))
+                spikes = torch.cat((spk.sum(dim=(0, 1)),spikes), 0)
                 # print(spk, spk.shape)
                 # Free up memory
                 del spk, mem, samples_n, samples_poisson, r_q
                 # torch.cuda.empty_cache()
-
+                
         # Calculate and return the average test loss over the dataset
         # avg_test_loss = sum(test_loss) / len(dataloader)
-        tot_spikes_per_output = torch.stack(spikes, dim=0).sum(dim=0)
+        print(spikes.shape, spikes)
+        tot_spikes_per_output = spikes
         
         print("tot_spikes_per_output", tot_spikes_per_output)
         tot_spikes = tot_spikes_per_output.sum(0)
+        spiking_options = self.num_steps * self.samples
         print("tot_spikes", tot_spikes)
+        print("spiking_options", spiking_options)
         probabilities = tot_spikes_per_output
-        print(probabilities.shape)
+        # print(probabilities.shape)
         probabilities = torch.div(tot_spikes_per_output, tot_spikes)
-        print("probabilities", probabilities)
+        # print("probabilities", probabilities)
         return probabilities
     
     def tensor_product_povm_matrices(self, s):
 
-      # Create the M^(alpha) matrices for a single qubit
-      single_qubit_povm_matrices = [create_povm_matrix(s) for s in self.s_vectors]
-      # Create all combinations of POVM outcomes for n qubits
-      combinations = product(single_qubit_povm_matrices, repeat=self.n)
+        # Create the M^(alpha) matrices for a single qubit
+        single_qubit_povm_matrices = [create_povm_matrix(s) for s in self.s_vectors]
+        # Create all combinations of POVM outcomes for n qubits
+        combinations = product(single_qubit_povm_matrices, repeat=self.n)
 
-      # Calculate the tensor products for each combination
-      povm_matrices_n_qubits = []
-      for comb in combinations:
-          povm_matrix = comb[0]
-          for matrix in comb[1:]:
-              povm_matrix = np.kron(povm_matrix, matrix)  # Tensor product
-          povm_matrices_n_qubits.append(povm_matrix)
+        # Calculate the tensor products for each combination
+        povm_matrices_n_qubits = []
+        for comb in combinations:
+            povm_matrix = comb[0]
+            for matrix in comb[1:]:
+                  povm_matrix = np.kron(povm_matrix, matrix)  # Tensor product
+            povm_matrices_n_qubits.append(povm_matrix)
 
-      return povm_matrices_n_qubits
+        return povm_matrices_n_qubits
     
     def reconstruct_matrix_from_prob(self, prob_rec, prob_true):
 
-      povm_matrices_n_qubits = self.tensor_product_povm_matrices(4)
+        povm_matrices_n_qubits = self.tensor_product_povm_matrices(4)
 
-      # Initialize the density matrix for n qubits (size 2^n x 2^n)
-      dim = 2**self.n
-      rho_rec = np.zeros((dim, dim), dtype=np.complex128)
-      rho_true = np.zeros((dim, dim), dtype=np.complex128)
+        # Initialize the density matrix for n qubits (size 2^n x 2^n)
+        dim = 2**self.n
+        rho_rec = np.zeros((dim, dim), dtype=np.complex128)
+        rho_true = np.zeros((dim, dim), dtype=np.complex128)
 
+        # Reconstruct the density matrix using the POVM matrices and probabilities
+        for i in range(len(prob_rec)):
+            rho_rec += prob_rec[i].item() * povm_matrices_n_qubits[i]
+            rho_true += prob_true[i] * povm_matrices_n_qubits[i] #.cpu().item()
 
-      # Reconstruct the density matrix using the POVM matrices and probabilities
-      for i in range(len(prob_rec)):
-          rho_rec += prob_rec[i].item() * povm_matrices_n_qubits[i]
-          rho_true += prob_true[i] * povm_matrices_n_qubits[i] #.cpu().item()
+        # Normalize the density matrix to ensure the trace is 1
+        # rho_rec /= np.trace(rho_rec)
+        # rho_true /= np.trace(rho_true)
+        
+        q_rec = qiskit.quantum_info.DensityMatrix(rho_rec, dims=None)
+        q_rec.draw(output="city", filename='q_rec.png') 
 
-      # Normalize the density matrix to ensure the trace is 1
-      rho_rec /= np.trace(rho_rec)
-      rho_true /= np.trace(rho_true)
-
-      return rho_rec, rho_true
+        return rho_rec, rho_true
     
 def fid(P_true, P_rec):
     return torch.sqrt(torch.mul(P_true.to("cpu"), P_rec.to("cpu"))).sum(0)
@@ -633,43 +642,43 @@ def plot_snn_spikes(spk_in, spk1_rec, spk2_rec, title):
   plt.show()
     
 def plot_histogram(fidelities, parameters):
-  # Create the x-tick labels as strings from the tuples
-  x_labels = [f"N={tup[0]}, bs={tup[1]}, Ne={tup[2]}" for tup in parameters]
+    # Create the x-tick labels as strings from the tuples
+    x_labels = [f"N={tup[0]}, bs={tup[1]}, Ne={tup[2]}" for tup in parameters]
 
-  # Generate x-axis positions
-  x_positions = np.arange(len(fidelities))
+    # Generate x-axis positions
+    x_positions = np.arange(len(fidelities))
 
-  # Plot the histogram (bar chart)
-  plt.figure(figsize=(10, 6))  # Adjust figure size
-  plt.bar(x_positions, fidelities, color='blue', alpha=0.7)
+    # Plot the histogram (bar chart)
+    plt.figure(figsize=(10, 6))  # Adjust figure size
+    plt.bar(x_positions, fidelities, color='blue', alpha=0.7)
 
-  # Add labels, title, and grid
-  plt.xlabel('Parameter Settings (N, batch_size, Ne)', fontsize=12)
-  plt.ylabel('Values from Function', fontsize=12)
-  plt.title('Histogram of Function Values vs Parameter Settings', fontsize=14)
-  plt.xticks(x_positions, x_labels, rotation=45, ha='right')  # Rotate x-labels for better readability
+    # Add labels, title, and grid
+    plt.xlabel('Parameter Settings (N, batch_size, Ne)', fontsize=12)
+    plt.ylabel('Values from Function', fontsize=12)
+    plt.title('Histogram of Function Values vs Parameter Settings', fontsize=14)
+    plt.xticks(x_positions, x_labels, rotation=45, ha='right')  # Rotate x-labels for better readability
 
-  # Display the plot
-  plt.tight_layout()  # Adjust layout to prevent label cutoff
-  plt.show()
+    # Display the plot
+    plt.tight_layout()  # Adjust layout to prevent label cutoff
+    plt.show()
 
 def fidelity(rho, sigma):
-  # Calculate the square root of the first density matrix
-  sqrt_rho = sqrtm(rho)
+    # Calculate the square root of the first density matrix
+    sqrt_rho = sqrtm(rho)
 
-  # Calculate the intermediate matrix product sqrt(rho) * sigma * sqrt(rho)
-  product_matrix = sqrt_rho @ sigma @ sqrt_rho
+    # Calculate the intermediate matrix product sqrt(rho) * sigma * sqrt(rho)
+    product_matrix = sqrt_rho @ sigma @ sqrt_rho
 
-  # Calculate the square root of the product matrix
-  sqrt_product_matrix = sqrtm(product_matrix)
+    # Calculate the square root of the product matrix
+    sqrt_product_matrix = sqrtm(product_matrix)
 
-  # Calculate the trace of the square root of the product matrix
-  fidelity_value = np.trace(sqrt_product_matrix)
+    # Calculate the trace of the square root of the product matrix
+    fidelity_value = np.trace(sqrt_product_matrix)
 
-  # Square the trace to get the fidelity
-  fidelity_value = np.real(fidelity_value) ** 2  
+    # Square the trace to get the fidelity
+    fidelity_value = np.real(fidelity_value) ** 2  
 
-  return fidelity_value
+    return fidelity_value
 
 
-# Function to create tensor products of POVM matrices for n qubits
+
