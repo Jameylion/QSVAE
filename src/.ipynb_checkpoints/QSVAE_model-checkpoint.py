@@ -514,8 +514,8 @@ class SQVAE():
                 # prob = spk.sum(dim=(0, 1)) 
                 # print(prob)
                 # Append the prob for the current batch
-                spikes = torch.cat((spk.sum(dim=(0, 1)),spikes), 0)
-                # print(spk, spk.shape)
+                spikes = torch.cat((spk,spikes), 0)
+                # print(spk, spk.shape
                 # Free up memory
                 del spk, mem, samples_n, samples_poisson, r_q
                 # torch.cuda.empty_cache()
@@ -525,16 +525,38 @@ class SQVAE():
         print(spikes.shape, spikes)
         tot_spikes_per_output = spikes
         
-        print("tot_spikes_per_output", tot_spikes_per_output)
-        tot_spikes = tot_spikes_per_output.sum(0)
-        spiking_options = self.num_steps * self.samples
-        print("tot_spikes", tot_spikes)
-        print("spiking_options", spiking_options)
-        probabilities = tot_spikes_per_output
-        # print(probabilities.shape)
-        probabilities = torch.div(tot_spikes_per_output, tot_spikes)
-        # print("probabilities", probabilities)
-        return probabilities
+        # print("tot_spikes_per_output", tot_spikes_per_output)
+        # tot_spikes = tot_spikes_per_output.sum(0)
+        # spiking_options = self.num_steps * self.samples
+        # print("tot_spikes", tot_spikes)
+        # print("spiking_options", spiking_options)
+        # probabilities = tot_spikes_per_output
+        # # print(probabilities.shape)
+        # probabilities = torch.div(tot_spikes_per_output, tot_spikes)
+        # # print("probabilities", probabilities)
+        return 0
+    
+#     def calculate_prob_from_spikes(self, spikes):
+#         outcome_counts = np.zeros(4**N)
+
+#         # Iterate over each one-hot vector to determine the corresponding outcome index
+#         for vector in one_hot_vectors:
+#             # Decode the one-hot vector into an outcome index
+#             index = 0
+#             for qubit in range(N):
+#                 start_index = qubit * 4
+#                 end_index = (qubit + 1) * 4
+#                 qubit_outcome = np.argmax(vector[start_index:end_index])
+#                 index = index * 4 + qubit_outcome  # Create a combined index for the entire system
+#             outcome_counts[index] += 1
+
+#         # Step 3: Calculate the probabilities
+#         # Normalize the outcome counts by the total number of samples to get probabilities
+#         P_vae = outcome_counts / S
+
+#         print("Generated Probabilities P(VAE):")
+#         print(P_vae)
+#          return P_vae
     
     def tensor_product_povm_matrices(self, s):
 
