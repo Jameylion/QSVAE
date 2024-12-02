@@ -6,6 +6,7 @@ from qiskit.quantum_info import Statevector
 from qiskit.primitives import BackendSampler
 from qiskit.circuit import QuantumCircuit
 import matplotlib.pyplot as plt
+from itertools import product
 
 import cmath
 
@@ -23,6 +24,11 @@ s_vectors = [
     np.array([-np.sqrt(2) / 3, -np.sqrt(2) / 3, -1 / 3])  # s^(3)
 ]
 
+single_qubit_povms = []
+for s in s_vectors:
+    M = 0.25 * (I + s[0] * sigma_x + s[1] * sigma_y + s[2] * sigma_z)
+    single_qubit_povms.append(M)
+
 class QuantumExperiment:
     """Handles the creation and execution of quantum experiments."""
 
@@ -33,6 +39,8 @@ class QuantumExperiment:
         self.backend_name = backend.name if hasattr(backend, 'name') else backend.name
         self.circuits_compiled = None
         self.results = None
+        self.probabilities = self.calculate_probabilities()
+        
 
     def run_experiment(self):
         """Run the quantum experiment and return the result and compiled circuits."""
@@ -51,6 +59,35 @@ class QuantumExperiment:
         self.results = result
 
         return result, circuits_compiled
+    
+    def construct_n_qubit_povms(self):
+    # Get all combinations of the single qubit POVM elements
+        povm_indices = product(range(4), repeat=self.n)
+        n_qubit_povms = []
+
+        for indices in povm_indices:
+            # Start with identity and apply tensor products
+            povm = single_qubit_povms[indices[0]]
+            for i in range(1, self.n):
+                povm = np.kron(povm, single_qubit_povms[indices[i]])
+            n_qubit_povms.append(povm)
+        
+        return n_qubit_povms
+
+    def calculate_probabilities(self):
+        # Get the density matrix for the GHZ state of N qubits
+        density_matrix = ghz_state_density_matrix(self.n)
+
+        # Construct POVM elements for N-qubit system
+        n_qubit_povms = self.construct_n_qubit_povms()
+
+        # Calculate probabilities
+        probabilities = []
+        for M in n_qubit_povms:
+            P = np.trace(np.dot(M, density_matrix)).real  # Take the real part to avoid numerical issues
+            probabilities.append(P)
+
+        return probabilities
 
     def get_qc_for_n_qubit_GHZ_state(self, n, backend_name):
         """Creates a quantum circuit for an n-qubit GHZ state."""
@@ -156,6 +193,11 @@ def calculate_angles(state_vector):
 
     return theta, phi
 
+def ghz_state_density_matrix(N):
+    state = np.zeros(2**N, dtype=complex)
+    state[0] = 1 / np.sqrt(2)
+    state[-1] = 1 / np.sqrt(2)
+    return np.outer(state, state.conj())
 # # Example state: Let's take a sample state |psi> = (1/√3)|0> + (√2/√3)|1>
 # # Corresponds to tetrahedral POVM states, e.g., (1/√3, √2/√3)
 # example_state = [1/np.sqrt(3), np.sqrt(2)/np.sqrt(3)]

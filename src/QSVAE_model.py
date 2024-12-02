@@ -9,7 +9,7 @@ from torch.nn import DataParallel
 # from src.Quantum_circuits import *
 from itertools import product
 from scipy.linalg import sqrtm
-from src.SNN_brainscales import *
+# from src.SNN_brainscales import *
 import snntorch.functional as SF
 import qiskit
 

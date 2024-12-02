@@ -20,7 +20,7 @@ class QSVAE_Params:
                  beta, num_steps, num_epochs, learning_rate,
                  batch_train, batch_test, batch_val, num_workers,
                  shuffle, split, device, input_size, hidden_size, 
-                 output_size, mock, result=None, circuits=None, backend=None):
+                 output_size, mock, result=None, circuits=None, backend=None, probabilities=None):
         self.I = I
         self.sigma_x = sigma_x
         self.sigma_y = sigma_y
@@ -48,9 +48,11 @@ class QSVAE_Params:
         self.hidden_size = hidden_size
         self.output_size = output_size
         self.mock = mock
+        self.load_model = load_model
         self.result = result
         self.circuits = circuits
         self.backend = backend
+        self.probabilities = probabilities
     
 
 # Define the Pauli matrices
@@ -68,9 +70,10 @@ s_vectors = [
 ]
 
 # Parameters
-n = 3
+n = 2
 shots = 100_000
 first_run = True
+load_model = False
 backend_type = "AerSimulator"
 train = True
 test = False
@@ -97,18 +100,18 @@ params = QSVAE_Params(
     n, shots, first_run, backend_type, train, test,
     val, beta, num_steps, num_epochs, learning_rate, batch_train,
     batch_test, batch_val, num_workers, shuffle, split, device,
-    input_size, hidden_size, output_size, mock
+    input_size, hidden_size, output_size, mock, load_model
 )
 
 
-for n in range(3, 9):
+for n in range(2, 4):
     params.n = n
     quantum_exp = QuantumExperiment(backend, params.n, params.shots)
     params.result, params.circuits = quantum_exp.run_experiment()
-    # Load data
-    train_loader, test_loader, val_loader, POVM_dataset = load_data(params)
+    params.probabilities = quantum_exp.probabilities
 
-    # Instantiate the model
+    POVM_dataset = load_data(params)
+
     model = SQVAE(params, POVM_dataset)
 
 

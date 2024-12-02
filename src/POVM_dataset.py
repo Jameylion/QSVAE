@@ -6,21 +6,27 @@ import matplotlib.pyplot as plt
 from torch.utils.data import Dataset, DataLoader, random_split, Subset
 from torchvision import transforms, utils
 import pickle
+from qiskit.visualization import plot_histogram
+from itertools import product
 
 class QuantumPOVMDataset(Dataset):
     """Dataset for Quantum POVM measurements."""
 
-    def __init__(self, measurement_data, n, shots, transform=None):
+    def __init__(self, measurement_data, n, shots, probabilities, transform=None):
         self.results = measurement_data.data
         self.n = n
         self.transform = transform
         self.shots = shots
-        self.measurements = self._process_measurements()
-        self.probability_true = self.measurements.sum(0)/self.measurements.sum((0,1,2))
+        self.probability_true = probabilities
+        self.measurements = self._one_hot_encode_probabilities(self._process_measurements())
         self.train_loader = None
         self.test_loader = None
         self.val_loader = None
-        # print(self.measurements  ) 
+        self.prob_dataset = self._calculate_probabilities()
+        # self.one_hot = self._one_hot_encode_measurements(self.measurements)
+        # print(self.measurements, self.measurements.shape  ) 
+        print("prob vector calculated from one hot vectors", self.prob_dataset)
+        print("true prob vector", self.probability_true)
         # lt = self.measurements.shape[0]
         # print(lt)
         # print(self.measurements.sum(0)/self.shots)
@@ -31,6 +37,7 @@ class QuantumPOVMDataset(Dataset):
         #           self.results(2)['memory'][i],
         #           bin(int(self.results(3)['memory'][i],16))[2:].zfill(self.n))
         #     print(self.measurements[i])
+
 
     def _process_measurements(self):
         """Processes the measurement data into a usable format."""
@@ -53,7 +60,42 @@ class QuantumPOVMDataset(Dataset):
 
         # print("Measurements shape:", measurements_array.shape)
         return measurements_array
+    
+    
+    def _one_hot_encode_probabilities(self, m):
+        # Store one-hot encoded vectors for each shot
+        one_hot_vectors = []
+        p = np.asarray(self.probability_true).reshape([4] * self.n)
+        values = np.arange(0, 4**self.n) 
+        rand_s = np.random.choice(values, size=self.shots, p=self.probability_true)
+        p_index = np.unravel_index(rand_s, p.shape)
+        print(p_index)       
+        for s in range(self.shots):
+            one_hot_vector = []     
+            for q in range(self.n):
+                v = np.zeros(4)       
+                v[p_index[q][s]] =  1
+                one_hot_vector.extend(v)
+            one_hot_vectors.append(one_hot_vector)
+            # print(f"Shots sample m: {m[s,:]} is converted to one hot vector {one_hot_vector}")
+        # print(one_hot_vectors)
 
+        one_hot_vectors_array = np.array(one_hot_vectors, dtype=np.float32)
+        print(one_hot_vectors_array, one_hot_vectors_array.shape)
+        return one_hot_vectors_array
+
+    def _calculate_probabilities(self):
+        prob = np.zeros([4] * self.n)
+        for s in range(self.shots):
+            index = []
+            for q in range(self.n):
+                # print(self.measurements[s, (q * 4): q + (q * 4) + 4])
+                index.append(np.argmax(self.measurements[s, (q * 4): q + (q+1)*4]))
+            # print(index)
+            prob[tuple(index)] += 1
+        prob = prob.reshape(-1)
+        prob = prob/self.shots
+        return prob
 
     def __len__(self):
         return len(self.measurements)
@@ -119,6 +161,7 @@ def load_data(params):
     # If first_run, create the dataset and save it
     if params.first_run:
         POVM_dataset = QuantumPOVMDataset(
+            probabilities=params.probabilities,
             measurement_data=params.result,
             n=params.n,
             shots=params.shots,
