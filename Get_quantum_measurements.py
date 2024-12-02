@@ -104,10 +104,10 @@ params = QSVAE_Params(
 )
 
 
-for n in range(2, 4):
+for n in range(2, 9):
     params.n = n
     quantum_exp = QuantumExperiment(backend, params.n, params.shots)
-    params.result, params.circuits = quantum_exp.run_experiment()
+    # params.result, params.circuits = quantum_exp.run_experiment()
     params.probabilities = quantum_exp.probabilities
 
     POVM_dataset = load_data(params)

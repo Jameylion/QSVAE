@@ -13,20 +13,20 @@ class QuantumPOVMDataset(Dataset):
     """Dataset for Quantum POVM measurements."""
 
     def __init__(self, measurement_data, n, shots, probabilities, transform=None):
-        self.results = measurement_data.data
+        self.results =None# measurement_data.data
         self.n = n
         self.transform = transform
         self.shots = shots
         self.probability_true = probabilities
-        self.measurements = self._one_hot_encode_probabilities(self._process_measurements())
+        self.measurements = self._one_hot_encode_probabilities()
         self.train_loader = None
         self.test_loader = None
         self.val_loader = None
         self.prob_dataset = self._calculate_probabilities()
         # self.one_hot = self._one_hot_encode_measurements(self.measurements)
         # print(self.measurements, self.measurements.shape  ) 
-        print("prob vector calculated from one hot vectors", self.prob_dataset)
-        print("true prob vector", self.probability_true)
+        # print("prob vector calculated from one hot vectors", self.prob_dataset)
+        # print("true prob vector", self.probability_true)
         # lt = self.measurements.shape[0]
         # print(lt)
         # print(self.measurements.sum(0)/self.shots)
@@ -62,14 +62,13 @@ class QuantumPOVMDataset(Dataset):
         return measurements_array
     
     
-    def _one_hot_encode_probabilities(self, m):
+    def _one_hot_encode_probabilities(self):
         # Store one-hot encoded vectors for each shot
         one_hot_vectors = []
         p = np.asarray(self.probability_true).reshape([4] * self.n)
         values = np.arange(0, 4**self.n) 
         rand_s = np.random.choice(values, size=self.shots, p=self.probability_true)
         p_index = np.unravel_index(rand_s, p.shape)
-        print(p_index)       
         for s in range(self.shots):
             one_hot_vector = []     
             for q in range(self.n):
@@ -81,7 +80,6 @@ class QuantumPOVMDataset(Dataset):
         # print(one_hot_vectors)
 
         one_hot_vectors_array = np.array(one_hot_vectors, dtype=np.float32)
-        print(one_hot_vectors_array, one_hot_vectors_array.shape)
         return one_hot_vectors_array
 
     def _calculate_probabilities(self):
