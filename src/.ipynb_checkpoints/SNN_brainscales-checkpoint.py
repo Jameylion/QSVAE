@@ -59,7 +59,7 @@ class SNN(torch.nn.Module):
         lif_params = F.CUBALIFParams(
             tau_mem_inv=1. / tau_mem, tau_syn_inv=1. / tau_syn, v_th=torch.tensor(0.005), alpha=alpha)
         li_params = F.CUBALIParams(
-            tau_mem_inv=1. / tau_mem, tau_syn_inv=1. / tau_syn)
+                tau_mem_inv=1. / tau_mem, tau_syn_inv=1. / tau_syn)
 
         # Experiment instance to work on
         self.exp = hxsnn.Experiment(
@@ -131,16 +131,9 @@ class SNN(torch.nn.Module):
         :return: Returns the output of the network, i.e. membrane traces of the
             readout neurons.
         """
-        # print(spikes)
-        # print(spikes.shape)
-        # spikes = torch.flatten(spikes)
-        # print(spikes)
-        # print(spikes.shape)
+
         # Increase synapse strength by repeating each input
         # spikes = spikes.repeat(1, 1, self.input_repetitions)
-
-        # print(spikes)
-        # print(spikes.shape)
         
         # Spike input handle
         spikes_handle = hxsnn.NeuronHandle(spikes)
@@ -150,14 +143,12 @@ class SNN(torch.nn.Module):
         # Forward
         c_h = self.linear_h(spikes_handle)
         self.s_h = self.lif_h(c_h)  # Keep spikes for fire reg.
-        # print(self.s_h)
         c_o = self.linear_o(self.s_h)
         y_o = self.li_readout(c_o)
 
         # Execute on hardware
         hxsnn.run(self.exp, spikes.shape[0])
         # print("end of forward snn")
-        # print(y_o.v_cadc)
         # print(type(c_o))
         # print(c_h)
         # print("spikes input", spikes.sum((0,1)))

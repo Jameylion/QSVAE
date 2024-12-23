@@ -1,4 +1,3 @@
-
 import torch
 import torch.nn as nn
 from tqdm import tqdm
@@ -9,15 +8,19 @@ from torch.nn import DataParallel
 # from src.Quantum_circuits import *
 from itertools import product
 from scipy.linalg import sqrtm
-# from src.SNN_brainscales import *
+from src.SNN_brainscales import *
 import snntorch.functional as SF
 import qiskit
+import torch.nn.functional as F
+import gc
 
 import os
 import numpy as np
 import pandas as pd
 from torch.utils.tensorboard import SummaryWriter
 import matplotlib.pyplot as plt
+import json
+import itertools
 
 # Define the Pauli matrices
 I = np.eye(2)
@@ -25,6 +28,63 @@ sigma_x = np.array([[0, 1], [1, 0]])
 sigma_y = np.array([[0, -1j], [1j, 0]])
 sigma_z = np.array([[1, 0], [0, -1]])
 
+from torch.autograd import Function
+
+import csv
+from datetime import datetime
+# Dynamically generate the filename with the current date
+current_date = datetime.now().strftime("%Y-%m-%d")
+csv_filename = f"training_metrics_{current_date}.csv"
+
+def write_to_csv(filename, row_index, data):
+    """
+    Writes metrics to a specific row in a CSV file.
+    Appends new rows if the file has fewer rows than `row_index + 1`.
+    """
+    # Read the existing CSV data
+    try:
+        with open(filename, mode='r') as f:
+            reader = list(csv.reader(f))
+    except FileNotFoundError:
+        reader = []  # Initialize as empty if file doesn't exist
+
+    # Ensure enough rows exist to write at `row_index`
+    while len(reader) <= row_index:
+        reader.append([])
+
+    # Update the specific row with data
+    reader[row_index] = data
+
+    # Write back to the CSV file
+    with open(filename, mode='w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerows(reader)
+
+def save_progress(epoch, iteration, filename="progress.json"):
+    with open(filename, "w") as f:
+        json.dump({"epoch": epoch, "iteration": iteration}, f)
+
+def load_progress(filename="progress.json"):
+    try:
+        with open(filename, "r") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {"epoch": 0, "iteration": 0}
+
+class SurrogateGradientFunction(Function):
+    @staticmethod
+    def forward(ctx, r, u, alpha):
+        ctx.save_for_backward(r, u)
+        ctx.alpha = alpha
+        return (u < r.unsqueeze(0)).float()
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        r, u = ctx.saved_tensors
+        alpha = ctx.alpha
+        gradient = (torch.abs(r - u) < (alpha / 2)).type(torch.float32) / alpha
+        grad_input = gradient * grad_output
+        return grad_input, None, None
 
 class Model(torch.nn.Module):
     """ Complete model with encoder (SNN on CPU) and decoder(SNN on Brainscales) """
@@ -70,17 +130,29 @@ class Model(torch.nn.Module):
         # Combine the losses
         total_loss = reconstruction_loss + kl_divergence
         return total_loss
+    
+    def kl_divergence(self, P, Q):
+        # print(P, Q)
+        # Ensure no zeros in Q to avoid log(0) issues (replace small values)
+        Q = np.where(Q == 0, 1e-10, Q)
+
+        # Compute KL divergence (element-wise calculation)
+        kl_div = np.sum(P * np.log(P / Q))
+
+        return kl_div
 
     def calc_mean_var(self, spk):
+        spk = spk.sum(0)
+        # Calculate mean and variance across time steps
+        mean = spk.mean(dim=0)  # Shape: [batch_size, output_size]
+        # print(mean)
 
-      # Calculate mean and variance across time steps
-      mean = spk.mean(dim=0)  # Shape: [batch_size, output_size]
+        variance = spk.var(dim=0, unbiased=False)  # Shape: [batch_size, output_size]
+        # print(variance)
+        # print("spike mean shape per outpu neuron\n", mean.shape)
+        del spk
 
-      variance = spk.var(dim=0, unbiased=False)  # Shape: [batch_size, output_size]
-      # print("spike mean shape per outpu neuron\n", mean.shape)
-      del spk
-
-      return mean, variance
+        return mean, variance
     
     def reparam_poisson(self, r, spk):
         '''
@@ -90,7 +162,8 @@ class Model(torch.nn.Module):
         # print(r.shape)
         # print(spk.shape)
         u = torch.rand(spk.shape).to(self.device)
-        z = (u < r.unsqueeze(0)).float()
+        
+        z = SurrogateGradientFunction.apply(r, u, self.params.alpha)
         # print(z.shape)
         return z
     
@@ -114,25 +187,12 @@ class Model(torch.nn.Module):
         return mmd
 
     def MMDKLLoss(self, r_p, r_q, x_hat, x, size):
-        # print("rates: ",r_p, r_q)
-        # print("x, xhat", x, x_hat)
-        # x_hat = (x_hat/x_hat.sum((0,1))) #nn.Softmax()
-        # print("x, xhat sm ", x, x_hat)
-        # print("x, xhat", x.shape, x_hat.shape)
         
-        # x_hat = torch.round(torch.nn.functional.normalize(x_hat, p=2.0, dim=1, eps=1e-12, out=None))
-        # x_hat = torch.round(x_hat/self.params.num_steps)
         x_hat = x_hat/self.params.num_steps
-        # x_hat = torch.sigmoid(x_hat)
-        # print("x, xhat sm ", x, x_hat)
 
-        
-        # mmd_loss = torch.mean((self.reparam_poisson(r_q, size)-self.reparam_poisson(r_p, size))**2)
-        
-        # Calculate the reconstruction loss
         # reconstruction_loss = nn.BCELoss()(x_hat, x)
-        reconstruction_loss = nn.MSELoss()(x_hat, x)
-
+        reconstruction_loss = 0
+            
         # Compute the MMD loss between two sets of samples (e.g., r_p and r_q)
         mmd_loss = self.mmd_rbf_loss(r_p, r_q, sigma=1.0)
 
@@ -153,17 +213,16 @@ class Model(torch.nn.Module):
         # print("z = ", self.reparam_poisson(r, spk))
         # z = self.reparameterization(mean, torch.exp(0.5 * log_var))
         z = self.reparam_poisson(r_p, spk)
-        tot_dim = spk.shape[0] * spk.shape[1] * spk.shape[2]
-        print(f"Spike count encoder = {spk.sum((0,1,2))} = {spk.sum((0,1,2))/tot_dim *100}% = , spike count latent z = {z.sum((0,1,2))} = {z.sum((0,1,2))/tot_dim *100}% ") 
+        
         # print(z.shape)
 
         spk, mem = self.decoder(z)
 
-        del z
+        # del z
         torch.cuda.empty_cache()
         # print(type(x_hat))
 
-        return spk, mem, mean, log_var, r_p
+        return spk, mem, mean, log_var, r_p, z
 
     
 # @title Class Encoder
@@ -194,8 +253,11 @@ class Encoder(nn.Module):
             spk2_rec.append(spk2)
             mem2_rec.append(mem2)
 
-            # del spk1, spk2, cur1, cur2
-        del mem1, mem2, spk1, spk2, cur1, cur2
+            del spk1, cur1, cur2
+        del mem1, mem2
+
+        # After the loop, you can also clear Python's memory
+        gc.collect()
 
         return torch.stack(spk2_rec, dim=0), torch.stack(mem2_rec, dim=0)
 
@@ -258,28 +320,28 @@ class SQVAE():
 
         # Initialize encoder and decoder as part of the model
         self.encoder = Encoder(params).to(self.device)
-        if not params.first_run:
-            self.decoder = SNN(
+        # if not params.first_run:
+        self.decoder = SNN(
                 n_in=params.output_size,
                 n_hidden=params.hidden_size,
                 n_out=params.input_size,
                 mock=params.mock,
                 calib_path="spiking2_cocolist.pbin",
                 dt=self.DT,
-                tau_mem=8.0e-06, #6.0e-6
-                tau_syn=8.0e-06,
-                alpha=70.,
+                tau_mem=1.0e-06, #6.0e-6
+                tau_syn=6.0e-06,
+                alpha=300.,
                 trace_shift_hidden=int(.0e-06/self.DT),
                 trace_shift_out=int(.0e-06/self.DT),
-                weight_init_hidden=(0.1, 0.4),
-                weight_init_output=(0.2, 0.3),
-                weight_scale=66.39,
+                weight_init_hidden=(0.2, 0.6),
+                weight_init_output=(0.4, 0.6),
+                weight_scale=100, #66.39
                 trace_scale=0.0147,
                 input_repetitions=1 if self.MOCK else 1,
                 device=params.device
             )
-        else:
-            self.decoder = Decoder(params).to(self.device)
+        # else:
+        #     self.decoder = Decoder(params).to(self.device)
 
         # Combine encoder and decoder into the model
         self.model = Model(self.encoder, self.decoder, params).to(self.device)
@@ -287,11 +349,11 @@ class SQVAE():
         # Optimizer
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate)
 
-        # If this is the first run, save the initial model state
-        if not params.load_model:
-            torch.save(self.model.state_dict(), f"data/models/model_{params.n}qubit_{int(params.shots)}shots.pt")
-        else:
-            self.model.load_state_dict(torch.load( f"data/models/model_{params.n}qubit_{int(params.shots)}shots.pt", map_location=torch.device(params.device)))
+        # # If this is the first run, save the initial model state
+        # if not params.load_model:
+        #     torch.save(self.model.state_dict(), f"data/models/model_{params.n}qubit_{int(params.shots)}shots.pt")
+        # else:
+        #     self.model.load_state_dict(torch.load( f"data/models/model_{params.n}qubit_{int(params.shots)}shots.pt", map_location=torch.device(params.device)))
 
         # # Check for multiple GPUs and use DataParallel
         # if torch.cuda.device_count() > 1:
@@ -304,7 +366,7 @@ class SQVAE():
         fidelity_score = 0
         if params.train:
             # Initialize TensorBoard writer for training
-            writer = SummaryWriter(log_dir='runs/Paperreproduction')
+            writer = SummaryWriter(log_dir='runs/test_case_greenlight')
             self.train_model(self.dataset.train_loader,self.optimizer, self.device, writer)
             torch.save(self.model.state_dict(), f"data/models/model_{self.n}qubit_{int(self.shots)}shots.pt")
 
@@ -315,100 +377,193 @@ class SQVAE():
             print("Average test loss: ", test_loss)
 
         if params.val:
-            prob_rec = self.val_model()
+            spikes = self.val_model()
+            prob_rec = self.calculate_prob_from_spikes(spikes, self.batch_size[2])          
             prob_true = self.dataset.probability_true
             print(f"prob rec = {prob_rec}, prob_true = {prob_true}")
             rho_rec, rho_true = self.reconstruct_matrix_from_prob(prob_rec, prob_true)
             # fidelity_score = fidelity(rho_rec, rho_true)
-            fidelity_score = fid(torch.from_numpy(prob_true), prob_rec)
+            fidelity_score = fid(torch.FloatTensor(prob_true), torch.from_numpy(prob_rec))
             print(f"The fidelity for {self.n} qubits is {fidelity_score} with {self.samples} samples.")
 
         return fidelity_score
 
     def train_model(self, dataloader, optimizer, device, writer):
         self.model.train()
+        
+        # Load previous progress
+        progress = load_progress()
+        start_epoch = progress.get("epoch", 0)
+        start_iteration = progress.get("iteration", 0)
+        print("Start epoch: ", start_epoch)
+        print("start_iteration:  ", start_iteration )
 
         # Early stopping parameters
-        patience = 3  # Number of epochs to wait before stopping if no improvement
+        patience = 10  # Number of epochs to wait before stopping if no improvement
         best_loss = float('inf')  # Initialize the best loss to a large value
         epochs_no_improve = 0  # Counter for epochs without improvement
 
         # Initialize list for storing loss values
         train_loss = []
+        fidelity_score = 0
         
         size = torch.Tensor(self.num_steps, self.batch_size[2], self.outputs)
-
+        batch_size = self.batch_size[0]
         # Training loop
-        for epoch in range(self.num_epochs):
+        for epoch in range(start_epoch, self.num_epochs):
             epoch_loss = []
             data = iter(dataloader)
-
-            for batch_idx, sample_batched in enumerate(tqdm(data)):
+            sliced_data = itertools.islice(data, start_iteration, None)
+            
+            for batch_idx, sample_batched in enumerate(tqdm(sliced_data, desc="Iterations", initial=start_iteration, total=len(data)-start_iteration), start=start_iteration):
+                # print("batch adn epoch", batch_idx, epoch)
+            # for batch_idx, sample_batched in enumerate(tqdm(data, start=start_iteration)):
+                save_progress(epoch, batch_idx)
+            # for batch_idx in range(0, self.shots, batch_size):
                 sample_batched = sample_batched['POVM'].to(device)
-                optimizer.zero_grad()
+                for param in self.model.parameters():
+                    param.grad = None
 
                 # Forward pass
-                spk, mem, mean, log_var, r_p = self.model(sample_batched)
-                
-                z_n = torch.randn(self.batch_size[2], self.outputs, dtype = torch.float32, device = self.device)
-            # print(samples_z.shape)r
-                r_q = self.model.bottlenecksm(self.model.bottleneckfc(z_n))
+                sample_batched = sample_batched.to(device)
+                spk, mem, mean, log_var, r_p, z = self.model(sample_batched)
 
                 # Calculate loss
-                # loss = self.model.loss_function(spk.sum(0), sample_batched, mean, log_var)
-                reconstruction_loss, mmd_loss = self.model.MMDKLLoss(r_p, r_q, spk.sum(0), sample_batched, size)
+                z_n = torch.randn(batch_size, self.outputs, dtype = torch.float32, device = self.device)
+                r_q = self.model.bottlenecksm(self.model.bottleneckfc(z_n))
+                
+                # mseklloss = self.model.loss_function(spk.sum(0), sample_batched, mean, log_var)
+                sample_batched = sample_batched.repeat(spk.shape[0], 1, 1)
+                reconstruction_loss, mmd_loss = self.model.MMDKLLoss(r_p, r_q, spk, sample_batched, size)
+                mse_loss = nn.MSELoss()(spk.sum(0), sample_batched.sum(0))     
+                # mse_loss = nn.MSELoss()(spk.mean(0), sample_batched.mean(0))
+                # mse_loss = nn.MSELoss()(spk.sum(0) / spk.size(0), sample_batched.sum(0) / sample_batched.size(0))
+                # r_s = self.model.firing_rate(sample_batched)
+                # r_o = self.model.firing_rate(spk)
+                # kl_loss = self.model.kl_divergence(self.dataset.probability_true, self.calculate_prob_from_spikes(spk.detach())) 
+                # reconstruction_loss = SF.ce_count_loss(population_code=True,num_classes=self.n)(spk,sample_batched)
+                
                 # Combine the losses with a balancing coefficient lambda_mmd
-                lambda_mmd = 1.0 
-                loss = reconstruction_loss + lambda_mmd * mmd_loss
+                lambda_mmd = 1
+                lamdba_kl = 0.01
+                lambda_fid = 1                
+                loss = 0
+                # loss += mseklloss
+                # print(f" mseklloss is {torch.round(mseklloss, decimals=3)}")
+                loss = mse_loss               
+                # loss += lamdba_kl * kl_loss 
+                # print(f" kl_loss is {round(lamdba_kl * kl_loss , 3)}")
+                loss += mmd_loss * lambda_mmd
+                # loss += lambda_fid * (1-fidelity_score)
+                prob_rec = self.calculate_prob_from_spikes(spk.detach(), batch_size)          
+                prob_true = self.dataset.probability_true
+                # print(f"prob rec = {prob_rec}, prob_true = {prob_true}")
+                rho_rec, rho_true = self.reconstruct_matrix_from_prob(prob_rec, prob_true)
+                # fidelity_score = fidelity(rho_rec, rho_true)
+                fidelity_score = fid(torch.FloatTensor(prob_true), torch.from_numpy(prob_rec))
+                tot_dim = spk.shape[0] * spk.shape[1] * spk.shape[2]
+                e_s = spk.sum((0,1,2))/tot_dim *100
+                z_s = z.sum((0,1,2))/tot_dim *100
+    
+                # Print metrics each some iterations
+                if batch_idx % 10 == 0:    
 
-                print(f" Reconstruction loss is {reconstruction_loss} and the mmd_loss = {mmd_loss}, total loss = {loss}")
+                    print(f" mse_loss is {torch.round(mse_loss, decimals=3)}")
+                    print(f" mmd_loss is {torch.round(mmd_loss * lambda_mmd , decimals=3)}")
+                    print(f" total loss = {torch.round(loss,decimals=3)}")              
+                    print(f"The fidelity for {self.n} qubits is {torch.round(fidelity_score,decimals=3)} with {batch_size} samples.")
+                    
+                    
+                    print(f"Spike count encoder = {spk.sum((0,1,2))} = {torch.round((e_s), decimals=2)}%, spike count latent z = {z.sum((0,1,2))} = {torch.round((z_s),decimals=2)}% ") 
+                    # writer.add_scalar('Spike count encoder%-train', e_s.item(), epoch * len(dataloader) + batch_idx)
+                    # writer.add_scalar('Spike count latent z%-train', z_s.item(), epoch * len(dataloader) + batch_idx)
+                    # writer.add_scalar('Fidelity-train', fidelity_score.item(), epoch * len(dataloader) + batch_idx) 
+                    # torch.save(self.model.state_dict(), "data/model_recover_point.pt")
+
+
+            #            
                 loss.backward()
                 optimizer.step()
+                lr = self.model.params.learning_rate
+                self.model.params.learning_rate = lr/(1 + (epoch * 10 + batch_idx)  / 0.0001)
 
                 # Append current loss
                 epoch_loss.append(loss.item())
+                
+                
+                # # Log loss to TensorBoard after each batch
+                # writer.add_scalar('mse_loss-train', mse_loss.item(), epoch * len(dataloader) + batch_idx)
+                # writer.add_scalar(f'mmd_loss/{lambda_mmd}-train', mmd_loss.item(), epoch * len(dataloader) + batch_idx)
+                # # writer.add_scalar('kl_loss/train', kl_loss.item(), epoch * len(dataloader) + batch_idx)
+                # writer.add_scalar('Loss-train', loss.item(), epoch * len(dataloader) + batch_idx)
+                #            # Calculate metrics
+                metrics = {
+                    'Spike count encoder%-train': e_s.item(),
+                    'Spike count latent z%-train': z_s.item(),
+                    'Fidelity-train': fidelity_score.item(),
+                    'mse_loss-train': mse_loss.item(),
+                    f'mmd_loss/{lambda_mmd}-train': mmd_loss.item(),
+                    'Loss-train': loss.item(),
+                    'Fidelity-val': fidelity_score.item()
+                }
 
-                # Log loss to TensorBoard after each batch
-                writer.add_scalar('reconstruction_loss/train', reconstruction_loss.item(), epoch * len(dataloader) + batch_idx)
-                writer.add_scalar('mmd_loss/train', mmd_loss.item(), epoch * len(dataloader) + batch_idx)
-                writer.add_scalar('Loss/train', loss.item(), epoch * len(dataloader) + batch_idx)
+                # Calculate row index
+                row_index = (epoch * len(dataloader)) + batch_idx
+
+                # Write metrics to CSV
+                write_to_csv(csv_filename, row_index, [row_index] + list(metrics.values()))
 
                 # Free up memory
-                del spk, mem, mean, log_var, loss
+                del spk, mem, mean, log_var, loss, z, sample_batched, r_q, z_n
                 torch.cuda.empty_cache()
+                gc.collect() 
+                writer.flush()
 
                 # Log memory usage if on GPU
                 if torch.cuda.is_available():
-                  memory_allocated = torch.cuda.memory_allocated(device)
-                  memory_cached = torch.cuda.memory_reserved(device)
+                    memory_allocated = torch.cuda.memory_allocated(device)
+                    memory_cached = torch.cuda.memory_reserved(device)
 
-                  # Log memory usage to TensorBoard
-                  writer.add_scalar('Memory/Allocated_MB', memory_allocated / (1024 ** 2), epoch * len(dataloader) + batch_idx)
-                  writer.add_scalar('Memory/Cached_MB', memory_cached / (1024 ** 2), epoch * len(dataloader) + batch_idx)
+                    # Log memory usage to TensorBoard
+                    writer.add_scalar('Memory/Allocated_MB', memory_allocated / (1024 ** 2), epoch * len(dataloader) + batch_idx)
+                    writer.add_scalar('Memory/Cached_MB', memory_cached / (1024 ** 2), epoch * len(dataloader) + batch_idx)
+                    
+#             spikes = self.val_model()
+#             prob_rec = self.calculate_prob_from_spikes(spikes, self.samples)    
+#             print("sum prob rec ", prob_rec.sum(0))
+#             prob_true = self.dataset.probability_true
+#             print(f"prob rec = {prob_rec}, prob_true = {prob_true}")
+#             rho_rec, rho_true = self.reconstruct_matrix_from_prob(prob_rec, prob_true)
+#             # fidelity_score = fidelity(rho_rec, rho_true)
+#             fidelity_score = fid(torch.FloatTensor(prob_true), torch.from_numpy(prob_rec))
+#             print(f"The fidelity for {self.n} qubits is {fidelity_score} with {self.samples} samples.")
+            
+#             del spikes
 
+            start_iteration = 0        
             # Calculate and store the average loss for the epoch
-            avg_epoch_loss = sum(epoch_loss) / len(dataloader)
-            print(f"Epoch {epoch+1}/{self.num_epochs}, Loss: {avg_epoch_loss:.4f}")
+            avg_epoch_loss = sum(epoch_loss) / self.shots
+            print(f"Epoch {epoch+1}/{self.num_epochs}, average Loss: {avg_epoch_loss:.4f}")
             train_loss.append(avg_epoch_loss)
 
             # Log average epoch loss to TensorBoard
             writer.add_scalar('Loss/epoch', avg_epoch_loss, epoch)
 
-            # Check for early stopping
-            if avg_epoch_loss < best_loss:
-                best_loss = avg_epoch_loss
-                epochs_no_improve = 0
-                # Save the best model
-                torch.save(self.model.state_dict(), "data/best_model.pt")
-            else:
-                epochs_no_improve += 1
-                print(f"No improvement for {epochs_no_improve} epochs")
+#             # Check for early stopping
+#             if avg_epoch_loss < best_loss:
+#                 best_loss = avg_epoch_loss
+#                 epochs_no_improve = 0
+#                 # Save the best model
+#                 torch.save(self.model.state_dict(), "data/best_model.pt")
+#             else:
+#                 epochs_no_improve += 1
+#                 print(f"No improvement for {epochs_no_improve} epochs")
 
-            if epochs_no_improve >= patience:
-                print("Early stopping triggered")
-                # Load the best model state before stopping
-                self.model.load_state_dict(torch.load("data/best_model.pt"))
-                break
+#             if epochs_no_improve >= patience:
+#                 print("Early stopping triggered")
+#                 # Load the best model state before stopping
+#                 self.model.load_state_dict(torch.load("data/best_model.pt"))
+#                 break
 
         # Finalize TensorBoard logging
         writer.flush()
@@ -492,20 +647,16 @@ class SQVAE():
 
         # data = iter(dataloader)
         # for batch_idx, sample_batched in enumerate(tqdm(data)):
+        batch_size = self.batch_size[0]
         
-        for i in tqdm(range(0, self.samples, self.batch_size[2])):
+        for i in tqdm(range(0, self.samples, batch_size)):
             
-            # sample_batched = sample_batched['POVM'].to(device)
             # Random samples from N(0, I)
-            # if self.device == "cpu":
-            #   samples_z = torch.randn(self.batch_size[2], self.outputs).to(self.device) 
-            # else:
-            samples_n = torch.randn(self.batch_size[2], self.outputs, dtype = torch.float32, device = self.device)
-            # print(samples_z.shape)r
-            r_q = self.model.bottlenecksm(self.model.bottleneckfc(samples_n))
-            
-            samples_poisson = self.model.reparam_poisson(r_q, torch.Tensor(self.num_steps, self.batch_size[2], self.outputs))
+            samples_n = torch.randn(batch_size, self.outputs, dtype = torch.float32, device = self.device)
+            r_q = self.model.bottlenecksm(self.model.bottleneckfc(samples_n))           
+            samples_poisson = self.model.reparam_poisson(r_q, torch.Tensor(self.num_steps, batch_size, self.outputs))
             # print(samples_poisson, samples_poisson.shape)
+            
             with torch.no_grad():  # Disable gradient calculation for testing
                 spk, mem = self.model.decoder(samples_poisson) # spk.shape == [num_steps, batch, output neurons decoder]
                 # print("spk: ", spk.sum(dim=(0, 1)).shape)
@@ -514,7 +665,7 @@ class SQVAE():
                 # prob = spk.sum(dim=(0, 1)) 
                 # print(prob)
                 # Append the prob for the current batch
-                spikes = torch.cat((spk,spikes), 0)
+                spikes = torch.cat((spk,spikes), 1)
                 # print(spk, spk.shape
                 # Free up memory
                 del spk, mem, samples_n, samples_poisson, r_q
@@ -522,7 +673,7 @@ class SQVAE():
                 
         # Calculate and return the average test loss over the dataset
         # avg_test_loss = sum(test_loss) / len(dataloader)
-        print(spikes.shape, spikes)
+        # print(spikes.shape, spikes)
         tot_spikes_per_output = spikes
         
         # print("tot_spikes_per_output", tot_spikes_per_output)
@@ -534,28 +685,22 @@ class SQVAE():
         # # print(probabilities.shape)
         # probabilities = torch.div(tot_spikes_per_output, tot_spikes)
         # # print("probabilities", probabilities)
-        return 0
+        return spikes
     
-    def calculate_prob_from_spikes(self, spikes):
-        outcome_counts = np.zeros(4**self.n)
-
-        # Iterate over each one-hot vector to determine the corresponding outcome index
-        for vector in spikes:
-            # Decode the one-hot vector into an outcome index
-            index = 0
-            for qubit in range(self.n):
-                start_index = qubit * 4
-                end_index = (qubit + 1) * 4
-                qubit_outcome = np.argmax(vector[start_index:end_index])
-                index = index * 4 + qubit_outcome  # Create a combined index for the entire system
-            outcome_counts[index] += 1
-
-        # Step 3: Calculate the probabilities
-        # Normalize the outcome counts by the total number of samples to get probabilities
-        P_vae = outcome_counts / S
-
-        print("Generated Probabilities P(VAE):")
-        print(P_vae)
+    def calculate_prob_from_spikes(self, spikes, batch_size):
+        spikes = spikes.sum(0)
+        # print(spikes.sum(0))
+        P_vae = np.zeros([4] * self.n)
+        for s in range(spikes.shape[0]):
+            index = []
+            for q in range(self.n):
+                # print(self.measurements[s, (q * 4): q + (q * 4) + 4])
+                index.append(np.argmax(spikes[s, (q * 4): (q + 1) * 4]))
+            # print(index)
+            # print(tuple(index))
+            P_vae[tuple(index)] += 1
+        P_vae = P_vae.reshape(-1)
+        P_vae = P_vae/batch_size        
         return P_vae
     
     def tensor_product_povm_matrices(self, s):
@@ -577,7 +722,7 @@ class SQVAE():
     
     def reconstruct_matrix_from_prob(self, prob_rec, prob_true):
 
-        povm_matrices_n_qubits = self.tensor_product_povm_matrices(4)
+        povm_matrices_n_qubits = self.dataset.n_qubit_povms
 
         # Initialize the density matrix for n qubits (size 2^n x 2^n)
         dim = 2**self.n
@@ -586,15 +731,15 @@ class SQVAE():
 
         # Reconstruct the density matrix using the POVM matrices and probabilities
         for i in range(len(prob_rec)):
-            rho_rec += prob_rec[i].item() * povm_matrices_n_qubits[i]
-            rho_true += prob_true[i] * povm_matrices_n_qubits[i] #.cpu().item()
+            rho_rec += float(prob_rec[i]) * povm_matrices_n_qubits[i].cpu().numpy()
+            rho_true += float(prob_true[i]) * povm_matrices_n_qubits[i].cpu().numpy()
 
         # Normalize the density matrix to ensure the trace is 1
-        # rho_rec /= np.trace(rho_rec)
-        # rho_true /= np.trace(rho_true)
+        rho_rec /= np.trace(rho_rec)
+        rho_true /= np.trace(rho_true)
         
-        q_rec = qiskit.quantum_info.DensityMatrix(rho_rec, dims=None)
-        q_rec.draw(output="city", filename='q_rec.png') 
+        # q_rec = qiskit.quantum_info.DensityMatrix(rho_rec, dims=None)
+        # q_rec.draw(output="city", filename='q_rec.png') 
 
         return rho_rec, rho_true
     

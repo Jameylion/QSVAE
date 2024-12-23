@@ -3,6 +3,7 @@ import os
 
 def in_ebrains_collaboratory():
     lab_image_name = os.environ.get('LAB_IMAGE_NAME')
+    print(lab_image_name)
     if lab_image_name is None:
         return False
 
