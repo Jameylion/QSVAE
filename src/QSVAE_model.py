@@ -199,6 +199,7 @@ class Model(torch.nn.Module):
         return reconstruction_loss, mmd_loss
        
     def forward(self, x):
+        # print(" x= " ,x.sum((0,1)))
         spk, mem = self.encoder(x)
         mean, log_var = self.calc_mean_var(spk)
         # self.plot_spikes(spk, mem, cur)
@@ -206,7 +207,7 @@ class Model(torch.nn.Module):
         # torch.set_printoptions(profile="full")
         # print(self.firing_rate(spk)) # prints the whole tensor
         # torch.set_printoptions(profile="default") # reset
-        # print("encoder out spk", spk.sum((0,1)))
+        # print("encoder out spk", spk.sum((0)))
         
         r_p = self.firing_rate(spk)
         # print("firing rate = ", r_p)
@@ -214,9 +215,10 @@ class Model(torch.nn.Module):
         # z = self.reparameterization(mean, torch.exp(0.5 * log_var))
         z = self.reparam_poisson(r_p, spk)
         
-        # print(z.shape)
+        # print("z = ", z.sum(0))
 
         spk, mem = self.decoder(z)
+        # print("decoder out spk" , spk.sum((0)))
 
         # del z
         torch.cuda.empty_cache()
@@ -246,9 +248,10 @@ class Encoder(nn.Module):
         for step in range(self.num_steps):
             cur1 = self.fc1(x)
             spk1, mem1 = self.lif1(cur1, mem1)
-
+            
             cur2 = self.fc2(spk1)
             spk2, mem2 = self.lif2(cur2, mem2)
+            # print("spk1, spk2 encoder" , spk1.sum((0,1)), spk2.sum((0,1)))
 
             spk2_rec.append(spk2)
             mem2_rec.append(mem2)
@@ -325,18 +328,18 @@ class SQVAE():
                 n_in=params.output_size,
                 n_hidden=params.hidden_size,
                 n_out=params.input_size,
-                mock=params.mock,
+                mock=self.MOCK,
                 calib_path="spiking2_cocolist.pbin",
                 dt=self.DT,
                 tau_mem=1.0e-06, #6.0e-6
                 tau_syn=6.0e-06,
-                alpha=300.,
+                alpha=300,
                 trace_shift_hidden=int(.0e-06/self.DT),
                 trace_shift_out=int(.0e-06/self.DT),
                 weight_init_hidden=(0.2, 0.6),
                 weight_init_output=(0.4, 0.6),
                 weight_scale=100, #66.39
-                trace_scale=0.0147,
+                trace_scale=0.014469,
                 input_repetitions=1 if self.MOCK else 1,
                 device=params.device
             )
@@ -377,19 +380,24 @@ class SQVAE():
             print("Average test loss: ", test_loss)
 
         if params.val:
-            spikes = self.val_model()
-            prob_rec = self.calculate_prob_from_spikes(spikes, self.batch_size[2])          
-            prob_true = self.dataset.probability_true
-            print(f"prob rec = {prob_rec}, prob_true = {prob_true}")
-            rho_rec, rho_true = self.reconstruct_matrix_from_prob(prob_rec, prob_true)
-            # fidelity_score = fidelity(rho_rec, rho_true)
-            fidelity_score = fid(torch.FloatTensor(prob_true), torch.from_numpy(prob_rec))
-            print(f"The fidelity for {self.n} qubits is {fidelity_score} with {self.samples} samples.")
-
+            fidelity_score = self.val(density = True)
+        return fidelity_score
+    
+    def val(self, density=False):
+        spikes = self.val_model()
+        prob_rec = self.calculate_prob_from_spikes(spikes, self.batch_size[2])          
+        prob_true = self.dataset.probability_true
+        # print(f"prob rec = {prob_rec}, prob_true = {prob_true}")
+        # rho_rec, rho_true = self.reconstruct_matrix_from_prob(prob_rec, prob_true, density)
+        # fidelity_score = fidelity(rho_rec, rho_true)
+        fidelity_score = fid(torch.FloatTensor(prob_true), torch.from_numpy(prob_rec))
+        print(f"The fidelity for {self.n} qubits is {fidelity_score} with {self.samples} samples.")
         return fidelity_score
 
     def train_model(self, dataloader, optimizer, device, writer):
         self.model.train()
+
+        csv_filename = f"training_metrics_{self.n}_qubits_on_{current_date}.csv"
         
         # Load previous progress
         progress = load_progress()
@@ -406,8 +414,10 @@ class SQVAE():
         # Initialize list for storing loss values
         train_loss = []
         fidelity_score = 0
+        fidelity_val = torch.Tensor(1)
+        # fidelity_val = 0
         
-        size = torch.Tensor(self.num_steps, self.batch_size[2], self.outputs)
+        # size = torch.Tensor(self.num_steps, self.batch_size[2], self.outputs)
         batch_size = self.batch_size[0]
         # Training loop
         for epoch in range(start_epoch, self.num_epochs):
@@ -434,7 +444,7 @@ class SQVAE():
                 
                 # mseklloss = self.model.loss_function(spk.sum(0), sample_batched, mean, log_var)
                 sample_batched = sample_batched.repeat(spk.shape[0], 1, 1)
-                reconstruction_loss, mmd_loss = self.model.MMDKLLoss(r_p, r_q, spk, sample_batched, size)
+                reconstruction_loss, mmd_loss = self.model.MMDKLLoss(r_p, r_q, spk, sample_batched, 0)
                 mse_loss = nn.MSELoss()(spk.sum(0), sample_batched.sum(0))     
                 # mse_loss = nn.MSELoss()(spk.mean(0), sample_batched.mean(0))
                 # mse_loss = nn.MSELoss()(spk.sum(0) / spk.size(0), sample_batched.sum(0) / sample_batched.size(0))
@@ -444,10 +454,12 @@ class SQVAE():
                 # reconstruction_loss = SF.ce_count_loss(population_code=True,num_classes=self.n)(spk,sample_batched)
                 
                 # Combine the losses with a balancing coefficient lambda_mmd
-                lambda_mmd = 1
+                lambda_mmd = 0.1
                 lamdba_kl = 0.01
-                lambda_fid = 1                
+                lambda_fid = 1
+                lambda_mse = 0.001
                 loss = 0
+                mse_loss *= lambda_mse
                 # loss += mseklloss
                 # print(f" mseklloss is {torch.round(mseklloss, decimals=3)}")
                 loss = mse_loss               
@@ -458,7 +470,6 @@ class SQVAE():
                 prob_rec = self.calculate_prob_from_spikes(spk.detach(), batch_size)          
                 prob_true = self.dataset.probability_true
                 # print(f"prob rec = {prob_rec}, prob_true = {prob_true}")
-                rho_rec, rho_true = self.reconstruct_matrix_from_prob(prob_rec, prob_true)
                 # fidelity_score = fidelity(rho_rec, rho_true)
                 fidelity_score = fid(torch.FloatTensor(prob_true), torch.from_numpy(prob_rec))
                 tot_dim = spk.shape[0] * spk.shape[1] * spk.shape[2]
@@ -466,7 +477,7 @@ class SQVAE():
                 z_s = z.sum((0,1,2))/tot_dim *100
     
                 # Print metrics each some iterations
-                if batch_idx % 10 == 0:    
+                if batch_idx % 10 == 0 and batch_idx != 0:   
 
                     print(f" mse_loss is {torch.round(mse_loss, decimals=3)}")
                     print(f" mmd_loss is {torch.round(mmd_loss * lambda_mmd , decimals=3)}")
@@ -478,7 +489,10 @@ class SQVAE():
                     # writer.add_scalar('Spike count encoder%-train', e_s.item(), epoch * len(dataloader) + batch_idx)
                     # writer.add_scalar('Spike count latent z%-train', z_s.item(), epoch * len(dataloader) + batch_idx)
                     # writer.add_scalar('Fidelity-train', fidelity_score.item(), epoch * len(dataloader) + batch_idx) 
-                    # torch.save(self.model.state_dict(), "data/model_recover_point.pt")
+                 # torch.save(self.model.state_dict(), "data/model_recover_point.pt")
+                
+                # if self.shots % (batch_idx +1) == 4: #or batch_idx == 0:   
+                #     fidelity_val = self.val(density = False)
 
 
             #            
@@ -504,7 +518,7 @@ class SQVAE():
                     'mse_loss-train': mse_loss.item(),
                     f'mmd_loss/{lambda_mmd}-train': mmd_loss.item(),
                     'Loss-train': loss.item(),
-                    'Fidelity-val': fidelity_score.item()
+                    'Fidelity-val': fidelity_val.item()
                 }
 
                 # Calculate row index
@@ -513,6 +527,7 @@ class SQVAE():
                 # Write metrics to CSV
                 write_to_csv(csv_filename, row_index, [row_index] + list(metrics.values()))
 
+                torch.save(self.model.state_dict(), f"data/model_recover_point_{current_date}_{self.n}.pt")
                 # Free up memory
                 del spk, mem, mean, log_var, loss, z, sample_batched, r_q, z_n
                 torch.cuda.empty_cache()
@@ -549,12 +564,12 @@ class SQVAE():
             # Log average epoch loss to TensorBoard
             writer.add_scalar('Loss/epoch', avg_epoch_loss, epoch)
 
-#             # Check for early stopping
-#             if avg_epoch_loss < best_loss:
-#                 best_loss = avg_epoch_loss
-#                 epochs_no_improve = 0
-#                 # Save the best model
-#                 torch.save(self.model.state_dict(), "data/best_model.pt")
+            # Check for early stopping
+            if avg_epoch_loss < best_loss:
+                best_loss = avg_epoch_loss
+                epochs_no_improve = 0
+                # Save the best model
+                torch.save(self.model.state_dict(), f"data/best_model_{self.n}_qubit_bs2.pt")
 #             else:
 #                 epochs_no_improve += 1
 #                 print(f"No improvement for {epochs_no_improve} epochs")
@@ -642,12 +657,14 @@ class SQVAE():
         torch.cuda.empty_cache()
 
         self.model.eval()  # Set the model to evaluation mode
-        spikes = torch.Tensor()
-       
+        # spikes = torch.Tensor().to(device=self.device)
+
+        spk_list = []
 
         # data = iter(dataloader)
         # for batch_idx, sample_batched in enumerate(tqdm(data)):
-        batch_size = self.batch_size[0]
+        # batch_size = self.batch_size[0]
+        batch_size = self.samples//50
         
         for i in tqdm(range(0, self.samples, batch_size)):
             
@@ -659,33 +676,16 @@ class SQVAE():
             
             with torch.no_grad():  # Disable gradient calculation for testing
                 spk, mem = self.model.decoder(samples_poisson) # spk.shape == [num_steps, batch, output neurons decoder]
-                # print("spk: ", spk.sum(dim=(0, 1)).shape)
-                # l = spk.shape[1]
-                # print(spk[int(i/100), int(i/100), :])
-                # prob = spk.sum(dim=(0, 1)) 
-                # print(prob)
+
                 # Append the prob for the current batch
-                spikes = torch.cat((spk,spikes), 1)
-                # print(spk, spk.shape
+                spk_list.append(spk.cpu()) 
+                # spikes = torch.cat((spk,spikes), 1)
+
                 # Free up memory
                 del spk, mem, samples_n, samples_poisson, r_q
-                # torch.cuda.empty_cache()
+                torch.cuda.empty_cache()
                 
-        # Calculate and return the average test loss over the dataset
-        # avg_test_loss = sum(test_loss) / len(dataloader)
-        # print(spikes.shape, spikes)
-        tot_spikes_per_output = spikes
-        
-        # print("tot_spikes_per_output", tot_spikes_per_output)
-        # tot_spikes = tot_spikes_per_output.sum(0)
-        # spiking_options = self.num_steps * self.samples
-        # print("tot_spikes", tot_spikes)
-        # print("spiking_options", spiking_options)
-        # probabilities = tot_spikes_per_output
-        # # print(probabilities.shape)
-        # probabilities = torch.div(tot_spikes_per_output, tot_spikes)
-        # # print("probabilities", probabilities)
-        return spikes
+        return torch.cat(spk_list, dim=1)
     
     def calculate_prob_from_spikes(self, spikes, batch_size):
         spikes = spikes.sum(0)
